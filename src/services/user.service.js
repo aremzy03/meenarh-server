@@ -5,8 +5,8 @@ async function createCustomer({ name, email, password, phone, default_address })
   const passwordHash = await bcrypt.hash(password, 10);
   
   const [result] = await pool.execute(
-    'INSERT INTO customers (name, email, password_hash, phone, default_address) VALUES (?, ?, ?, ?, ?)',
-    [name, email, passwordHash, phone || null, default_address || null]
+    'INSERT INTO customers (name, email, password_hash, phone, default_address, is_phone_verified) VALUES (?, ?, ?, ?, ?, ?)',
+    [name, email, passwordHash, phone || null, default_address || null, 0]
   );
 
   return {
@@ -28,10 +28,30 @@ async function getCustomerByEmail(email) {
 
 async function getCustomerById(id) {
   const [customers] = await pool.execute(
-    'SELECT id, name, email, phone, default_address, created_at, updated_at FROM customers WHERE id = ?',
+    'SELECT id, name, email, phone, default_address, is_phone_verified, created_at, updated_at FROM customers WHERE id = ?',
     [id]
   );
   return customers.length > 0 ? customers[0] : null;
+}
+
+async function verifyCustomerPhoneByEmail(email) {
+  const [customers] = await pool.execute(
+    'SELECT id FROM customers WHERE email = ?',
+    [email]
+  );
+
+  if (customers.length === 0) {
+    return false;
+  }
+
+  const customer = customers[0];
+
+  await pool.execute(
+    'UPDATE customers SET is_phone_verified = 1 WHERE id = ?',
+    [customer.id]
+  );
+
+  return true;
 }
 
 async function updateCustomerProfile(id, { phone, default_address }) {
@@ -67,4 +87,5 @@ module.exports = {
   getCustomerByEmail,
   getCustomerById,
   updateCustomerProfile,
+  verifyCustomerPhoneByEmail,
 };

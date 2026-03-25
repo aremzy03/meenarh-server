@@ -76,7 +76,14 @@ async function createOrder(data, userId) {
     );
 
     await conn.commit();
-    return { trackingNumber, price };
+    return {
+      orderId,
+      trackingNumber,
+      price,
+      senderName,
+      senderPhone,
+      receiverName: data.receiver_name,
+    };
   } catch (err) {
     await conn.rollback();
     throw err;

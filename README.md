@@ -21,7 +21,7 @@ Production-ready Node.js backend for Meenarh Logistics — a Lagos-based deliver
 - ✅ Real-time order tracking by tracking number (public)
 - ✅ Admin authentication with JWT (7-day expiry)
 - ✅ Role-based access control (admin/staff)
-- ✅ Customer management for admins
+- ✅ Customer management for admins (list, profile, order history, cart)
 - ✅ Admin user creation (admin only)
 - ✅ Order status management with event timeline
 - ✅ Zone-based pricing calculation
@@ -29,6 +29,10 @@ Production-ready Node.js backend for Meenarh Logistics — a Lagos-based deliver
 - ✅ Prepared SQL statements (no raw queries)
 - ✅ Transaction support for data integrity
 - ✅ Clean error handling with production/dev modes
+- ✅ Blog post management (create, edit, publish, delete) with slug generation
+- ✅ Company settings management (dynamic contact info)
+- ✅ Promo/discount codes with expiry, usage limits, and usage tracking
+- ✅ Analytics event tracking (page views, orders, signups) with dashboard aggregations
 
 ## Project Structure
 
@@ -37,6 +41,8 @@ server/
 ├── package.json
 ├── .env.example
 ├── schema.sql
+├── migrations/
+│   └── admin-features.sql           # Blog, settings, promo codes, analytics tables
 └── src/
     ├── server.js                    # Entry point
     ├── app.js                       # Express configuration
@@ -45,15 +51,27 @@ server/
     ├── routes/
     │   ├── public.routes.js         # Public API routes
     │   ├── user.routes.js           # Customer auth & profile routes
-    │   └── admin.routes.js          # Protected admin routes
+    │   ├── admin.routes.js          # Protected admin routes
+    │   ├── blog.routes.js           # Blog (public read + admin CRUD)
+    │   ├── settings.routes.js       # Company settings (public read + admin write)
+    │   ├── promo.routes.js          # Promo codes (public validate + admin CRUD)
+    │   └── analytics.routes.js      # Analytics (public track + admin read)
     ├── controllers/
     │   ├── order.controller.js      # Order endpoint handlers
     │   ├── user.controller.js       # Customer endpoint handlers
-    │   └── admin.controller.js      # Admin endpoint handlers
+    │   ├── admin.controller.js      # Admin endpoint handlers
+    │   ├── blog.controller.js       # Blog endpoint handlers
+    │   ├── settings.controller.js   # Settings endpoint handlers
+    │   ├── promo.controller.js      # Promo code endpoint handlers
+    │   └── analytics.controller.js  # Analytics endpoint handlers
     ├── services/
     │   ├── order.service.js         # Order business logic
     │   ├── user.service.js          # Customer business logic
-    │   └── pricing.service.js       # Price calculation
+    │   ├── pricing.service.js       # Price calculation
+    │   ├── blog.service.js          # Blog business logic + slug generation
+    │   ├── settings.service.js      # Company settings business logic
+    │   ├── promo.service.js         # Promo code validation & usage tracking
+    │   └── analytics.service.js     # Analytics aggregation queries
     ├── middleware/
     │   ├── auth.middleware.js       # JWT verification
     │   ├── role.middleware.js       # Role-based access
@@ -65,7 +83,9 @@ server/
     └── validators/
         ├── order.validator.js       # Order input validation (Zod)
         ├── user.validator.js        # Customer input validation (Zod)
-        └── auth.validator.js        # Auth input validation (Zod)
+        ├── auth.validator.js        # Auth input validation (Zod)
+        ├── blog.validator.js        # Blog input validation (Zod)
+        └── promo.validator.js       # Promo code input validation (Zod)
 ```
 
 ## Setup Instructions
@@ -640,6 +660,557 @@ Content-Type: application/json
   }
 }
 ```
+
+#### Get Customer by ID (Admin)
+
+**Description:** Retrieves the full profile of a single customer including their total order count and total amount spent. Requires admin or staff authentication.
+
+```http
+GET /api/admin/customers/:id
+Authorization: Bearer <token>
+```
+
+**URL Parameters:**
+- `id` (required): Customer database ID
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "id": 1,
+    "name": "John Doe",
+    "email": "john.doe@example.com",
+    "phone": "08012345678",
+    "default_address": "123 Allen Avenue, Ikeja",
+    "created_at": "2026-02-15T08:00:00.000Z",
+    "updated_at": "2026-02-15T08:00:00.000Z",
+    "order_count": 5,
+    "total_spent": 19300.00
+  }
+}
+```
+
+#### Get Customer Orders (Admin)
+
+**Description:** Retrieves all orders placed by a specific customer, ordered by most recent first. Requires admin or staff authentication.
+
+```http
+GET /api/admin/customers/:id/orders
+Authorization: Bearer <token>
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": 1,
+      "tracking_number": "MN-2026-0001",
+      "receiver_name": "Jane Smith",
+      "delivery_address": "45 Admiralty Way, Lekki",
+      "price": 3860.00,
+      "status": "Delivered",
+      "created_at": "2026-02-15T10:30:00.000Z"
+    }
+  ]
+}
+```
+
+#### Get Customer Cart (Admin)
+
+**Description:** Retrieves the current cart items for a specific customer. Requires admin or staff authentication.
+
+```http
+GET /api/admin/customers/:id/cart
+Authorization: Bearer <token>
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": 3,
+      "receiver_name": "Mike Johnson",
+      "delivery_address": "12 Broad Street, Lagos Island",
+      "package_description": "Electronics",
+      "estimated_price": 2500.00,
+      "created_at": "2026-02-26T09:00:00.000Z"
+    }
+  ]
+}
+```
+
+---
+
+### Blog API
+
+#### Get Published Posts (Public)
+
+**Description:** Returns all published blog posts ordered by publish date. No authentication required.
+
+```http
+GET /api/blog
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": 1,
+      "title": "5 Tips for Safe Package Delivery",
+      "slug": "5-tips-for-safe-package-delivery",
+      "cover_image_url": "https://example.com/image.jpg",
+      "author_name": "Admin User",
+      "published_at": "2026-02-20T10:00:00.000Z",
+      "created_at": "2026-02-20T09:30:00.000Z"
+    }
+  ]
+}
+```
+
+#### Get Published Post by Slug (Public)
+
+**Description:** Returns the full content of a single published post by its URL slug. No authentication required.
+
+```http
+GET /api/blog/:slug
+```
+
+**URL Parameters:**
+- `slug` (required): URL-friendly post slug (e.g., `5-tips-for-safe-package-delivery`)
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "id": 1,
+    "title": "5 Tips for Safe Package Delivery",
+    "slug": "5-tips-for-safe-package-delivery",
+    "content": "<h2>Tip 1...</h2><p>...</p>",
+    "cover_image_url": "https://example.com/image.jpg",
+    "author_name": "Admin User",
+    "status": "published",
+    "published_at": "2026-02-20T10:00:00.000Z"
+  }
+}
+```
+
+#### List All Posts (Admin)
+
+**Description:** Returns all blog posts (drafts and published) for the admin panel. Requires admin or staff authentication.
+
+```http
+GET /api/admin/blog
+Authorization: Bearer <token>
+```
+
+#### Create Blog Post (Admin)
+
+**Description:** Creates a new blog post. Auto-generates a URL slug from the title. If status is `published`, sets `published_at` to the current timestamp. Requires admin or staff authentication.
+
+```http
+POST /api/admin/blog
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{
+  "title": "5 Tips for Safe Package Delivery",
+  "content": "<h2>Tip 1</h2><p>Always wrap fragile items...</p>",
+  "cover_image_url": "https://example.com/image.jpg",
+  "status": "published"
+}
+```
+
+**Request Fields:**
+- `title` (required): Post title (minimum 2 characters)
+- `content` (required): HTML content from rich text editor (minimum 10 characters)
+- `cover_image_url` (optional): Full URL to cover image
+- `status` (optional): `draft` or `published` (defaults to `draft`)
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Blog post created successfully",
+  "data": { "id": 1, "slug": "5-tips-for-safe-package-delivery" }
+}
+```
+
+#### Update Blog Post (Admin)
+
+**Description:** Updates an existing blog post. All fields are optional — only provided fields are updated. If changing status to `published` for the first time, `published_at` is set. Requires admin or staff authentication.
+
+```http
+PUT /api/admin/blog/:id
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{
+  "title": "Updated Title",
+  "status": "published"
+}
+```
+
+#### Delete Blog Post (Admin)
+
+```http
+DELETE /api/admin/blog/:id
+Authorization: Bearer <token>
+```
+
+---
+
+### Company Settings API
+
+#### Get Settings (Public)
+
+**Description:** Returns current company settings (name, tagline, phone, email, address, whatsapp). Used by the public website footer and contact sections. No authentication required.
+
+```http
+GET /api/settings
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "company_name": "Meenarh Logistics",
+    "tagline": "Fast, trackable deliveries across Lagos.",
+    "phone": "08012345678",
+    "email": "info@meenarh.com",
+    "address": "Lagos, Nigeria",
+    "whatsapp": "2348012345678"
+  }
+}
+```
+
+#### Update Settings (Admin)
+
+**Description:** Bulk updates company settings. Accepts any key-value pairs — existing keys are updated, new keys are inserted. Only admin role can update settings. Requires admin authentication.
+
+```http
+PUT /api/admin/settings
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{
+  "phone": "08099999999",
+  "whatsapp": "2348099999999",
+  "tagline": "Reliable deliveries, every time."
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Settings updated successfully",
+  "data": {
+    "company_name": "Meenarh Logistics",
+    "tagline": "Reliable deliveries, every time.",
+    "phone": "08099999999",
+    "email": "info@meenarh.com",
+    "address": "Lagos, Nigeria",
+    "whatsapp": "2348099999999"
+  }
+}
+```
+
+---
+
+### Promo Codes API
+
+#### Validate Promo Code (Public)
+
+**Description:** Validates a promo code against an order total. Checks that the code exists, is active, is not expired, has not exceeded its usage limit, and the order meets the minimum value requirement. Returns the calculated discount without applying it. No authentication required — used at checkout.
+
+```http
+POST /api/promo-codes/validate
+Content-Type: application/json
+
+{
+  "code": "SAVE20",
+  "order_total": 5000
+}
+```
+
+**Request Fields:**
+- `code` (required): Promo code string
+- `order_total` (required): Current order total in naira (positive number)
+
+**Response (valid):**
+```json
+{
+  "success": true,
+  "data": {
+    "valid": true,
+    "promo_code_id": 1,
+    "discount_type": "percentage",
+    "discount_value": 20,
+    "discount": 1000.00,
+    "new_total": 4000.00
+  }
+}
+```
+
+**Response (invalid):**
+```json
+{
+  "success": true,
+  "data": {
+    "valid": false,
+    "message": "This promo code has expired"
+  }
+}
+```
+
+#### List Promo Codes (Admin)
+
+```http
+GET /api/admin/promo-codes
+Authorization: Bearer <token>
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": 1,
+      "code": "SAVE20",
+      "discount_type": "percentage",
+      "discount_value": 20.00,
+      "min_order_value": 3000.00,
+      "max_uses": 100,
+      "current_uses": 14,
+      "expires_at": "2026-12-31T23:59:59.000Z",
+      "is_active": true,
+      "created_at": "2026-02-26T10:00:00.000Z"
+    }
+  ]
+}
+```
+
+#### Create Promo Code (Admin)
+
+**Description:** Creates a new promo code. `discount_type` must be `percentage` or `fixed`. Leave `max_uses` and `expires_at` as `null` for unlimited/no-expiry. Requires admin or staff authentication.
+
+```http
+POST /api/admin/promo-codes
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{
+  "code": "SAVE20",
+  "discount_type": "percentage",
+  "discount_value": 20,
+  "min_order_value": 3000,
+  "max_uses": 100,
+  "expires_at": "2026-12-31T23:59:59.000Z"
+}
+```
+
+**Request Fields:**
+- `code` (required): Unique promo code string (min 3 characters, auto-uppercased)
+- `discount_type` (required): `percentage` or `fixed`
+- `discount_value` (required): Percentage (e.g., `20` for 20%) or fixed amount in naira
+- `min_order_value` (optional): Minimum order total required to use the code
+- `max_uses` (optional): Maximum number of times the code can be used (null = unlimited)
+- `expires_at` (optional): ISO datetime string for expiry (null = never expires)
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Promo code created successfully",
+  "data": { "id": 1, "code": "SAVE20" }
+}
+```
+
+#### Update Promo Code (Admin)
+
+```http
+PUT /api/admin/promo-codes/:id
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{
+  "discount_value": 25,
+  "expires_at": "2027-01-31T23:59:59.000Z"
+}
+```
+
+#### Toggle Promo Code Active/Inactive (Admin)
+
+**Description:** Toggles the `is_active` flag without deleting the code. Returns the new active state.
+
+```http
+PATCH /api/admin/promo-codes/:id/toggle
+Authorization: Bearer <token>
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Promo code deactivated",
+  "data": { "is_active": false }
+}
+```
+
+#### Get Promo Code Detail with Usage (Admin)
+
+**Description:** Returns full promo code details plus a list of every customer who used it, which order it was applied to, and how much discount was given.
+
+```http
+GET /api/admin/promo-codes/:id
+Authorization: Bearer <token>
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "id": 1,
+    "code": "SAVE20",
+    "discount_type": "percentage",
+    "discount_value": 20.00,
+    "current_uses": 14,
+    "usage": [
+      {
+        "id": 1,
+        "customer_name": "John Doe",
+        "customer_email": "john@example.com",
+        "tracking_number": "MN-2026-0042",
+        "discount_applied": 1000.00,
+        "used_at": "2026-02-20T14:30:00.000Z"
+      }
+    ]
+  }
+}
+```
+
+#### Delete Promo Code (Admin)
+
+```http
+DELETE /api/admin/promo-codes/:id
+Authorization: Bearer <token>
+```
+
+---
+
+### Analytics API
+
+#### Track Event (Public)
+
+**Description:** Records a frontend analytics event (page view, order created, or signup). Rate-limited. Silently fails on the client — does not affect user experience.
+
+```http
+POST /api/analytics/track
+Content-Type: application/json
+
+{
+  "event_type": "page_view",
+  "page_url": "/",
+  "session_id": "1740571234-abc123xyz"
+}
+```
+
+**Request Fields:**
+- `event_type` (required): `page_view`, `order_created`, or `signup`
+- `page_url` (optional): URL of the page being viewed
+- `session_id` (optional): Client-side session identifier for unique visitor counting
+
+#### Analytics Overview (Admin)
+
+**Description:** Returns visitor, order, revenue, and signup counts for a date range plus the calculated conversion rate. Defaults to the last 30 days if no dates provided.
+
+```http
+GET /api/admin/analytics/overview?start_date=2026-02-01&end_date=2026-02-28
+Authorization: Bearer <token>
+```
+
+**Query Parameters:**
+- `start_date` (optional): ISO date string — defaults to 30 days ago
+- `end_date` (optional): ISO date string — defaults to today
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "total_visitors": 1240,
+    "total_orders": 87,
+    "total_revenue": 335820.00,
+    "total_signups": 43,
+    "conversion_rate": 7.02
+  }
+}
+```
+
+#### Analytics Trends (Admin)
+
+**Description:** Returns daily visitor and order counts for charting. Useful for visualising trends over time.
+
+```http
+GET /api/admin/analytics/trends?start_date=2026-02-01&end_date=2026-02-28
+Authorization: Bearer <token>
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "visitors": [
+      { "date": "2026-02-01", "visitors": 42 },
+      { "date": "2026-02-02", "visitors": 38 }
+    ],
+    "orders": [
+      { "date": "2026-02-01", "orders": 3, "revenue": 11580.00 }
+    ]
+  }
+}
+```
+
+#### Analytics Locations (Admin)
+
+**Description:** Returns the most frequently requested pickup and delivery locations aggregated from all orders.
+
+```http
+GET /api/admin/analytics/locations?limit=10
+Authorization: Bearer <token>
+```
+
+**Query Parameters:**
+- `limit` (optional): Number of top locations to return (default `10`, max `100`)
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "pickup_locations": [
+      { "location": "123 Allen Avenue, Ikeja", "request_count": 28 }
+    ],
+    "delivery_locations": [
+      { "location": "45 Admiralty Way, Lekki", "request_count": 19 }
+    ]
+  }
+}
+```
+
+---
 
 ## Tracking Number Format
 

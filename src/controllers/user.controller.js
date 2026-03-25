@@ -2,6 +2,7 @@ const bcrypt = require('bcrypt');
 const userService = require('../services/user.service');
 const orderService = require('../services/order.service');
 const { signToken } = require('../utils/jwt');
+const { sendTemplateMessage } = require('../services/whatsapp.service');
 
 async function signup(req, res, next) {
   try {
@@ -24,6 +25,28 @@ async function signup(req, res, next) {
 
     // Generate JWT
     const token = signToken({ id: customer.id, email: customer.email, type: 'customer' });
+
+    // Send WhatsApp phone verification link (non-blocking)
+    const frontendBaseUrl = process.env.FRONTEND_BASE_URL;
+    if (frontendBaseUrl && customer.phone) {
+      const verifyUrl = `${frontendBaseUrl.replace(/\/$/, '')}/verify-phone`;
+      const verificationLink = `${verifyUrl}?email=${encodeURIComponent(customer.email)}`;
+
+      sendTemplateMessage({
+        to: customer.phone,
+        templateName: 'phone_verification_link',
+        languageCode: 'en',
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: customer.name || 'there' },
+              { type: 'text', text: verificationLink },
+            ],
+          },
+        ],
+      });
+    }
 
     res.status(201).json({
       success: true,
@@ -135,4 +158,32 @@ async function getOrderHistory(req, res, next) {
   }
 }
 
-module.exports = { signup, login, getProfile, updateProfile, getOrderHistory };
+async function verifyPhone(req, res, next) {
+  try {
+    const { email } = req.query;
+
+    if (!email) {
+      return res.status(400).json({ success: false, message: 'Email is required' });
+    }
+
+    const ok = await userService.verifyCustomerPhoneByEmail(email);
+
+    if (!ok) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    const redirectUrl = process.env.FRONTEND_BASE_URL
+      ? `${process.env.FRONTEND_BASE_URL.replace(/\/$/, '')}/verify-phone-success`
+      : null;
+
+    if (redirectUrl) {
+      return res.redirect(302, redirectUrl);
+    }
+
+    return res.json({ success: true, message: 'Phone number verified successfully' });
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { signup, login, getProfile, updateProfile, getOrderHistory, verifyPhone };

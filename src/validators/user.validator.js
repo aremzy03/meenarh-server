@@ -1,25 +1,35 @@
 const { z } = require('zod');
 
-const signupSchema = z.object({
-  name: z.string().min(2, 'Name is required (minimum 2 characters)'),
-  email: z.string().email('Valid email is required'),
-  password: z.string().min(6, 'Password must be at least 6 characters'),
-  phone: z.string().min(7, 'Valid phone number is required').optional(),
-  default_address: z.string().min(5, 'Address must be at least 5 characters').optional(),
-}).strict();
+const phoneSchema = z
+  .string()
+  .min(7, 'Valid phone number is required')
+  .regex(/^\+?[0-9]{7,15}$/, 'Phone number must be digits and may start with +');
+
+const signupSchema = z
+  .object({
+    name: z.string().min(2, 'Name is required (minimum 2 characters)'),
+    email: z.string().email('Valid email is required'),
+    password: z.string().min(6, 'Password must be at least 6 characters'),
+    phone: phoneSchema,
+    default_address: z.string().min(5, 'Address must be at least 5 characters').optional(),
+  })
+  .strict();
 
 const loginSchema = z.object({
   email: z.string().email('Valid email is required'),
   password: z.string().min(6, 'Password must be at least 6 characters'),
 }).strict();
 
-const updateProfileSchema = z.object({
-  phone: z.string().min(7, 'Valid phone number is required').optional(),
-  default_address: z.string().min(5, 'Address must be at least 5 characters').optional(),
-}).strict().refine(
-  (data) => data.phone !== undefined || data.default_address !== undefined,
-  { message: 'At least one field (phone or default_address) must be provided' }
-);
+const updateProfileSchema = z
+  .object({
+    phone: phoneSchema.optional(),
+    default_address: z.string().min(5, 'Address must be at least 5 characters').optional(),
+  })
+  .strict()
+  .refine(
+    (data) => data.phone !== undefined || data.default_address !== undefined,
+    { message: 'At least one field (phone or default_address) must be provided' }
+  );
 
 function validateSignup(req, res, next) {
   const result = signupSchema.safeParse(req.body);

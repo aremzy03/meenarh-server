@@ -8,6 +8,7 @@ const router = Router();
 // Public routes
 router.post('/signup', validateSignup, userController.signup);
 router.post('/login', validateLogin, userController.login);
+router.get('/verify-phone', userController.verifyPhone);
 
 // Protected routes
 router.use(authMiddleware);

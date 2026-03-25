@@ -1,3 +1,4 @@
+-- Active: 1771318376114@@localhost@3306@meenarh_logistics
 -- Migration: Add cart functionality and enhanced order fields
 -- Date: 2026-02-17
 
