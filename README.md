@@ -115,7 +115,40 @@ DB_NAME=meenarh_logistics
 DB_PORT=3306
 JWT_SECRET=your-strong-secret-key
 NODE_ENV=development
+
+# Paystack card/bank payments (see "Paystack" below)
+PAYSTACK_SECRET_KEY=sk_test_...
+APP_PUBLIC_URL=http://localhost:3000
 ```
+
+### Paystack
+
+Checkout uses Paystack: the API initializes a transaction with an amount computed from the cart (and server-side promo validation), then creates orders only after Paystack confirms payment.
+
+**Environment**
+
+- `PAYSTACK_SECRET_KEY` — secret key from the Paystack dashboard (server only; never expose in the browser).
+- `APP_PUBLIC_URL` — full origin of the customer-facing Next.js app, **no trailing slash** (e.g. `http://localhost:3000` in dev). Used to build Paystack `callback_url` (`{APP_PUBLIC_URL}/dashboard/payment/callback`). This URL must be allowed in your Paystack dashboard if Paystack enforces callback allowlists.
+
+**Webhook**
+
+Register this URL in Paystack (Settings → API & Webhooks → Webhook URL):
+
+`https://<your-api-host>/api/webhooks/paystack`
+
+The server verifies each webhook with **HMAC-SHA512** of the raw JSON body using your secret key. In production, follow [Paystack IP allowlist](https://paystack.com/docs/payments/webhooks#ip-addresses) if you restrict inbound traffic.
+
+**Database**
+
+Apply the payment intents migration after your main schema:
+
+```bash
+mysql -u root -p meenarh_logistics < migrations/payment-intents.sql
+```
+
+**Test cards**
+
+Use Paystack’s test mode and [test payments documentation](https://paystack.com/docs/payments/test-payments) for card numbers and flows.
 
 ### 3. Set Up Database
 

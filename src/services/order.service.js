@@ -1,6 +1,13 @@
 const pool = require('../config/db');
 const generateTracking = require('../utils/generateTracking');
 const { calculatePrice } = require('./pricing.service');
+const regionPricing = require('./regionPricing.service');
+
+function regionRateError(message) {
+  const err = new Error(message);
+  err.statusCode = 400;
+  return err;
+}
 
 async function createOrder(data, userId) {
   const conn = await pool.getConnection();
@@ -25,25 +32,47 @@ async function createOrder(data, userId) {
       }
     }
 
-    // Calculate price if zone info is provided
     let price = null;
-    if (data.zone_id && data.distance_km) {
-      const [zones] = await conn.execute('SELECT base_price, per_km_rate FROM zones WHERE id = ?', [data.zone_id]);
+    let pickupRegionId = data.pickup_region_id ?? null;
+    let deliveryRegionId = data.delivery_region_id ?? null;
+    let etaMinHours = null;
+    let etaMaxHours = null;
+    let etaLabel = null;
+    let zoneId = data.zone_id ?? null;
+    let distanceKm = data.distance_km ?? null;
+
+    if (pickupRegionId != null && deliveryRegionId != null) {
+      const rate = await regionPricing.getActiveRate(pickupRegionId, deliveryRegionId);
+      if (!rate) {
+        throw regionRateError('No active delivery rate for this pickup and delivery region');
+      }
+      price = rate.price_ngn;
+      etaMinHours = rate.eta_min_hours;
+      etaMaxHours = rate.eta_max_hours;
+      etaLabel = rate.eta_label || null;
+      zoneId = null;
+      distanceKm = null;
+    } else if (zoneId != null && distanceKm != null) {
+      const [zones] = await conn.execute('SELECT base_price, per_km_rate FROM zones WHERE id = ?', [zoneId]);
       if (zones.length > 0) {
         price = calculatePrice({
           zoneBasePrice: parseFloat(zones[0].base_price),
           perKmRate: parseFloat(zones[0].per_km_rate),
-          distanceKm: data.distance_km,
+          distanceKm,
         });
       }
+      pickupRegionId = null;
+      deliveryRegionId = null;
     }
 
     // Insert order with placeholder tracking number
     const [result] = await conn.execute(
       `INSERT INTO orders (user_id, tracking_number, sender_name, sender_phone, pickup_address,
         receiver_name, receiver_phone, delivery_address, package_description,
-        item_value, quantity, is_fragile, zone_id, distance_km, price, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Order Created')`,
+        item_value, quantity, is_fragile, zone_id, distance_km,
+        pickup_region_id, delivery_region_id, eta_min_hours, eta_max_hours, eta_label,
+        price, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Order Created')`,
       [
         userId,
         'TEMP',
@@ -57,8 +86,13 @@ async function createOrder(data, userId) {
         data.item_value || null,
         data.quantity || 1,
         data.is_fragile || false,
-        data.zone_id || null,
-        data.distance_km || null,
+        zoneId,
+        distanceKm,
+        pickupRegionId,
+        deliveryRegionId,
+        etaMinHours,
+        etaMaxHours,
+        etaLabel,
         price,
       ]
     );
@@ -94,7 +128,11 @@ async function createOrder(data, userId) {
 
 async function getOrderByTracking(trackingNumber) {
   const [orders] = await pool.execute(
-    'SELECT tracking_number, sender_name, sender_phone, pickup_address, receiver_name, receiver_phone, delivery_address, package_description, item_value, quantity, is_fragile, price, status, created_at, updated_at FROM orders WHERE tracking_number = ?',
+    `SELECT tracking_number, sender_name, sender_phone, pickup_address, receiver_name, receiver_phone,
+            delivery_address, package_description, item_value, quantity, is_fragile,
+            pickup_region_id, delivery_region_id, eta_min_hours, eta_max_hours, eta_label,
+            price, status, created_at, updated_at
+     FROM orders WHERE tracking_number = ?`,
     [trackingNumber]
   );
 
@@ -102,17 +140,28 @@ async function getOrderByTracking(trackingNumber) {
 
   const order = orders[0];
 
-  const [events] = await pool.execute(
+  const [eventRows] = await pool.execute(
     'SELECT status, note, created_at FROM order_events WHERE order_id = (SELECT id FROM orders WHERE tracking_number = ?) ORDER BY created_at ASC',
     [trackingNumber]
   );
+
+  const events = eventRows.map((r, i) => ({
+    id: i + 1,
+    status: r.status,
+    description: r.note || '',
+    created_at: r.created_at,
+  }));
 
   return { ...order, events };
 }
 
 async function getAllOrders() {
   const [orders] = await pool.execute(
-    'SELECT id, tracking_number, sender_name, receiver_name, pickup_address, delivery_address, package_description, item_value, quantity, is_fragile, price, status, created_at, updated_at FROM orders ORDER BY created_at DESC'
+    `SELECT id, tracking_number, sender_name, receiver_name, pickup_address, delivery_address,
+            package_description, item_value, quantity, is_fragile,
+            pickup_region_id, delivery_region_id, eta_min_hours, eta_max_hours, eta_label,
+            price, status, created_at, updated_at
+     FROM orders ORDER BY created_at DESC`
   );
   return orders;
 }
@@ -140,7 +189,11 @@ async function updateOrderStatus(orderId, status, note) {
 
 async function getOrdersByUserId(userId) {
   const [orders] = await pool.execute(
-    'SELECT id, tracking_number, sender_name, receiver_name, pickup_address, delivery_address, package_description, item_value, quantity, is_fragile, price, status, created_at, updated_at FROM orders WHERE user_id = ? ORDER BY created_at DESC',
+    `SELECT id, tracking_number, sender_name, receiver_name, pickup_address, delivery_address,
+            package_description, item_value, quantity, is_fragile,
+            pickup_region_id, delivery_region_id, eta_min_hours, eta_max_hours, eta_label,
+            price, status, created_at, updated_at
+     FROM orders WHERE user_id = ? ORDER BY created_at DESC`,
     [userId]
   );
   return orders;

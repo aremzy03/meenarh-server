@@ -7,6 +7,7 @@ const { adminRouter: blogAdminRouter } = require('./blog.routes');
 const { adminRouter: settingsAdminRouter } = require('./settings.routes');
 const { adminRouter: promoAdminRouter } = require('./promo.routes');
 const { adminRouter: analyticsAdminRouter } = require('./analytics.routes');
+const regionAdminRouter = require('./regionAdmin.routes');
 
 const router = Router();
 
@@ -30,5 +31,6 @@ router.use('/blog', blogAdminRouter);
 router.use('/settings', settingsAdminRouter);
 router.use('/promo-codes', promoAdminRouter);
 router.use('/analytics', analyticsAdminRouter);
+router.use('/regions', regionAdminRouter);
 
 module.exports = router;

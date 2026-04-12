@@ -1,6 +1,49 @@
 const pool = require('../config/db');
 const pricingService = require('./pricing.service');
 const orderService = require('./order.service');
+const regionPricing = require('./regionPricing.service');
+
+function regionRateError(message) {
+  const err = new Error(message);
+  err.statusCode = 400;
+  return err;
+}
+
+async function resolveLinePricing(itemData) {
+  const pickupRegionId = itemData.pickup_region_id ?? null;
+  const deliveryRegionId = itemData.delivery_region_id ?? null;
+  const zoneId = itemData.zone_id ?? null;
+  const distanceKm = itemData.distance_km ?? null;
+
+  if (pickupRegionId != null && deliveryRegionId != null) {
+    const rate = await regionPricing.getActiveRate(pickupRegionId, deliveryRegionId);
+    if (!rate) {
+      throw regionRateError('No active delivery rate for this pickup and delivery region');
+    }
+    return {
+      estimated_price: rate.price_ngn,
+      pickup_region_id: pickupRegionId,
+      delivery_region_id: deliveryRegionId,
+      eta_min_hours: rate.eta_min_hours,
+      eta_max_hours: rate.eta_max_hours,
+      eta_label: rate.eta_label || null,
+      zone_id: null,
+      distance_km: null,
+    };
+  }
+
+  const estimated_price = await pricingService.calculatePriceFromZone(zoneId, distanceKm);
+  return {
+    estimated_price,
+    pickup_region_id: null,
+    delivery_region_id: null,
+    eta_min_hours: null,
+    eta_max_hours: null,
+    eta_label: null,
+    zone_id: zoneId || null,
+    distance_km: distanceKm || null,
+  };
+}
 
 // Add item to cart
 async function addToCart(itemData, userId) {
@@ -15,23 +58,19 @@ async function addToCart(itemData, userId) {
     item_value,
     quantity = 1,
     is_fragile = false,
-    zone_id,
-    distance_km,
   } = itemData;
 
-  // Calculate estimated price if zone and distance provided
-  let estimated_price = null;
-  if (zone_id && distance_km) {
-    estimated_price = await pricingService.calculatePrice(zone_id, distance_km);
-  }
+  const pricing = await resolveLinePricing(itemData);
 
   const [result] = await pool.execute(
     `INSERT INTO cart_items (
       user_id, sender_name, sender_phone, pickup_address,
       receiver_name, receiver_phone, delivery_address,
       package_description, item_value, quantity, is_fragile,
-      zone_id, distance_km, estimated_price
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      zone_id, distance_km,
+      pickup_region_id, delivery_region_id, eta_min_hours, eta_max_hours, eta_label,
+      estimated_price
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       userId,
       sender_name || null,
@@ -44,13 +83,18 @@ async function addToCart(itemData, userId) {
       item_value || null,
       quantity,
       is_fragile,
-      zone_id || null,
-      distance_km || null,
-      estimated_price,
+      pricing.zone_id,
+      pricing.distance_km,
+      pricing.pickup_region_id,
+      pricing.delivery_region_id,
+      pricing.eta_min_hours,
+      pricing.eta_max_hours,
+      pricing.eta_label,
+      pricing.estimated_price,
     ]
   );
 
-  return { id: result.insertId, estimated_price };
+  return { id: result.insertId, estimated_price: pricing.estimated_price };
 }
 
 // Get user's cart items
@@ -75,15 +119,9 @@ async function updateCartItem(itemId, itemData, userId) {
     item_value,
     quantity,
     is_fragile,
-    zone_id,
-    distance_km,
   } = itemData;
 
-  // Recalculate price if zone/distance changed
-  let estimated_price = null;
-  if (zone_id && distance_km) {
-    estimated_price = await pricingService.calculatePrice(zone_id, distance_km);
-  }
+  const pricing = await resolveLinePricing(itemData);
 
   await pool.execute(
     `UPDATE cart_items SET
@@ -99,6 +137,11 @@ async function updateCartItem(itemId, itemData, userId) {
       is_fragile = ?,
       zone_id = ?,
       distance_km = ?,
+      pickup_region_id = ?,
+      delivery_region_id = ?,
+      eta_min_hours = ?,
+      eta_max_hours = ?,
+      eta_label = ?,
       estimated_price = ?,
       updated_at = CURRENT_TIMESTAMP
     WHERE id = ? AND user_id = ?`,
@@ -113,15 +156,20 @@ async function updateCartItem(itemId, itemData, userId) {
       item_value || null,
       quantity || 1,
       is_fragile || false,
-      zone_id || null,
-      distance_km || null,
-      estimated_price,
+      pricing.zone_id,
+      pricing.distance_km,
+      pricing.pickup_region_id,
+      pricing.delivery_region_id,
+      pricing.eta_min_hours,
+      pricing.eta_max_hours,
+      pricing.eta_label,
+      pricing.estimated_price,
       itemId,
       userId,
     ]
   );
 
-  return { estimated_price };
+  return { estimated_price: pricing.estimated_price };
 }
 
 // Delete cart item
@@ -174,6 +222,8 @@ async function checkout(userId) {
         is_fragile: item.is_fragile,
         zone_id: item.zone_id,
         distance_km: item.distance_km,
+        pickup_region_id: item.pickup_region_id,
+        delivery_region_id: item.delivery_region_id,
       };
 
       // Use existing order service to create order
@@ -228,6 +278,8 @@ async function checkoutSingleItem(itemId, userId) {
       is_fragile: item.is_fragile,
       zone_id: item.zone_id,
       distance_km: item.distance_km,
+      pickup_region_id: item.pickup_region_id,
+      delivery_region_id: item.delivery_region_id,
     };
 
     // Use existing order service to create order

@@ -13,7 +13,28 @@ const createOrderSchema = z.object({
   is_fragile: z.boolean().optional(),
   zone_id: z.number().int().positive().optional(),
   distance_km: z.number().positive().optional(),
-}).strict();
+  pickup_region_id: z.number().int().positive().optional(),
+  delivery_region_id: z.number().int().positive().optional(),
+}).strict().superRefine((data, ctx) => {
+  const hasPickup = data.pickup_region_id != null;
+  const hasDelivery = data.delivery_region_id != null;
+  if (hasPickup !== hasDelivery) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'pickup_region_id and delivery_region_id must both be provided',
+      path: ['delivery_region_id'],
+    });
+  }
+  const hasRegions = hasPickup && hasDelivery;
+  const hasLegacy = data.zone_id != null && data.distance_km != null;
+  if (!hasRegions && !hasLegacy) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Provide pickup_region_id and delivery_region_id, or zone_id and distance_km',
+      path: ['pickup_region_id'],
+    });
+  }
+});
 
 function validateCreateOrder(req, res, next) {
   const result = createOrderSchema.safeParse(req.body);
