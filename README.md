@@ -25,7 +25,7 @@ Production-ready Node.js backend for Meenarh Logistics — a Lagos-based deliver
 - ✅ Admin user creation (admin only)
 - ✅ Order status management with event timeline
 - ✅ Zone-based pricing calculation
-- ✅ Rate limiting on public endpoints (100 req/15 min)
+- ✅ Rate limiting on public endpoints (400 req/15 min per IP in production, 5000 in development; not applied to `/api/cart` or other authenticated mounts)
 - ✅ Prepared SQL statements (no raw queries)
 - ✅ Transaction support for data integrity
 - ✅ Clean error handling with production/dev modes
@@ -128,7 +128,7 @@ Checkout uses Paystack: the API initializes a transaction with an amount compute
 **Environment**
 
 - `PAYSTACK_SECRET_KEY` — secret key from the Paystack dashboard (server only; never expose in the browser).
-- `APP_PUBLIC_URL` — full origin of the customer-facing Next.js app, **no trailing slash** (e.g. `http://localhost:3000` in dev). Used to build Paystack `callback_url` (`{APP_PUBLIC_URL}/dashboard/payment/callback`). This URL must be allowed in your Paystack dashboard if Paystack enforces callback allowlists.
+- `APP_PUBLIC_URL` — full origin of the customer-facing Next.js app, **no trailing slash** (e.g. `http://localhost:3000` in dev). Set this in **`meenarh-server/.env`** (the API process); values from `meenarh-web/.env` are **not** visible to Express. Used for Paystack `callback_url` (`{APP_PUBLIC_URL}/dashboard/payment/callback`). In local dev, if unset, the server defaults to `http://localhost:3000` and logs a warning. Production requires `APP_PUBLIC_URL` explicitly.
 
 **Webhook**
 
@@ -1260,7 +1260,7 @@ Examples:
 - ✅ **JWT Authentication:** 7-day token expiry
 - ✅ **Role-Based Access:** admin/staff roles enforced
 - ✅ **Prepared Statements:** All SQL queries parameterized (no SQL injection)
-- ✅ **Rate Limiting:** 100 requests per 15 minutes per IP on public routes
+- ✅ **Rate Limiting:** 400 requests per 15 minutes per IP on public routes in production (5000 in development); cart and other authenticated API paths are not counted against this bucket
 - ✅ **Input Validation:** Zod schemas reject invalid/malicious input
 - ✅ **No Sensitive Data Exposure:** Password hashes never returned in responses
 - ✅ **No Internal IDs Exposed:** Public tracking uses tracking_number only

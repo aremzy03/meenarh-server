@@ -15,17 +15,40 @@ function makeReference() {
   return `MN-${crypto.randomBytes(16).toString('hex')}`;
 }
 
+let warnedCallbackUrlFallback = false;
+
+/**
+ * Origin of the Next.js app (callback after Paystack). Read from the **API** process env
+ * (meenarh-server/.env) — variables only in meenarh-web/.env are not available here.
+ */
 function publicCallbackBase() {
   const base =
     process.env.APP_PUBLIC_URL ||
+    process.env.CLIENT_APP_URL ||
     process.env.NEXT_PUBLIC_APP_URL ||
     process.env.FRONTEND_URL;
-  if (!base) {
-    const err = new Error('APP_PUBLIC_URL (or NEXT_PUBLIC_APP_URL) is required for Paystack callbacks');
+
+  if (base) {
+    return base.replace(/\/$/, '');
+  }
+
+  if (process.env.NODE_ENV === 'production') {
+    const err = new Error(
+      'Set APP_PUBLIC_URL in the API server environment (meenarh-server/.env) to your live site origin, e.g. https://app.example.com — Paystack needs this for callback_url. The Express server does not load Next.js env files.'
+    );
     err.statusCode = 500;
     throw err;
   }
-  return base.replace(/\/$/, '');
+
+  const fallback = 'http://localhost:3000';
+  if (!warnedCallbackUrlFallback) {
+    warnedCallbackUrlFallback = true;
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[payments] APP_PUBLIC_URL is unset; using ${fallback} for Paystack callback_url. Add APP_PUBLIC_URL to meenarh-server/.env if the web app runs on another host or port.`
+    );
+  }
+  return fallback;
 }
 
 function parseMetadata(row) {

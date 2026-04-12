@@ -29,9 +29,8 @@ app.post(
 
 app.use(express.json());
 
-// Routes
-// Apply rate limiting only to unauthenticated/public routes
-app.use('/api', publicLimiter, publicRoutes);
+// Routes (do not put publicLimiter on `/api` — it would rate-limit cart, auth, etc.)
+app.use('/api', publicRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/blog', publicLimiter, blogPublicRouter);
 app.use('/api/settings', publicLimiter, settingsPublicRouter);
