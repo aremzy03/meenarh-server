@@ -1,6 +1,6 @@
 const bcrypt = require('bcrypt');
 const pool = require('../config/db');
-const { signToken } = require('../utils/jwt');
+const { signToken, sessionCookieOptions } = require('../utils/jwt');
 const orderService = require('../services/order.service');
 const { sendTemplateMessage } = require('../services/whatsapp.service');
 
@@ -23,19 +23,32 @@ async function login(req, res, next) {
       return res.status(401).json({ success: false, message: 'Invalid email or password' });
     }
 
-    const token = signToken({ id: user.id, email: user.email, role: user.role });
+    const token = signToken({ id: user.id, email: user.email, kind: 'admin', role: user.role });
+    res.cookie('meenarh_admin_token', token, sessionCookieOptions());
 
     res.json({
       success: true,
       message: 'Login successful',
       data: {
-        token,
         user: { name: user.name, email: user.email, role: user.role },
       },
     });
   } catch (err) {
     next(err);
   }
+}
+
+async function logout(_req, res) {
+  const secure = process.env.NODE_ENV === 'production';
+  res.clearCookie('meenarh_admin_token', { path: '/', sameSite: 'lax', secure });
+  return res.json({ success: true, message: 'Logged out' });
+}
+
+async function me(req, res) {
+  // token is verified by auth middleware; role guard is in routes
+  const [users] = await pool.execute('SELECT id, name, email, role FROM users WHERE id = ?', [req.user.id]);
+  if (!users.length) return res.status(404).json({ success: false, message: 'User not found' });
+  return res.json({ success: true, data: users[0] });
 }
 
 async function getOrders(_req, res, next) {
@@ -231,6 +244,6 @@ async function getCustomerCart(req, res, next) {
 }
 
 module.exports = {
-  login, getOrders, updateOrderStatus, listCustomers, createAdminUser,
+  login, logout, me, getOrders, updateOrderStatus, listCustomers, createAdminUser,
   getCustomerById, getCustomerOrders, getCustomerCart,
 };

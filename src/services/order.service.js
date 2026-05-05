@@ -14,6 +14,16 @@ async function createOrder(data, userId) {
   try {
     await conn.beginTransaction();
 
+    const [verifyRows] = await conn.execute(
+      'SELECT is_phone_verified FROM customers WHERE id = ? LIMIT 1',
+      [userId]
+    );
+    if (!verifyRows.length || !verifyRows[0].is_phone_verified) {
+      const err = new Error('PHONE_NOT_VERIFIED');
+      err.statusCode = 403;
+      throw err;
+    }
+
     // Get user profile to populate sender info if not provided
     let senderName = data.sender_name;
     let senderPhone = data.sender_phone;
@@ -35,6 +45,7 @@ async function createOrder(data, userId) {
     let price = null;
     let pickupRegionId = data.pickup_region_id ?? null;
     let deliveryRegionId = data.delivery_region_id ?? null;
+    let deliveryRegionAreaId = data.delivery_region_area_id ?? null;
     let etaMinHours = null;
     let etaMaxHours = null;
     let etaLabel = null;
@@ -63,6 +74,7 @@ async function createOrder(data, userId) {
       }
       pickupRegionId = null;
       deliveryRegionId = null;
+      deliveryRegionAreaId = null;
     }
 
     // Insert order with placeholder tracking number
@@ -70,9 +82,9 @@ async function createOrder(data, userId) {
       `INSERT INTO orders (user_id, tracking_number, sender_name, sender_phone, pickup_address,
         receiver_name, receiver_phone, delivery_address, package_description,
         item_value, quantity, is_fragile, zone_id, distance_km,
-        pickup_region_id, delivery_region_id, eta_min_hours, eta_max_hours, eta_label,
+        pickup_region_id, delivery_region_id, delivery_region_area_id, eta_min_hours, eta_max_hours, eta_label,
         price, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Order Created')`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Order Created')`,
       [
         userId,
         'TEMP',
@@ -90,6 +102,7 @@ async function createOrder(data, userId) {
         distanceKm,
         pickupRegionId,
         deliveryRegionId,
+        deliveryRegionAreaId,
         etaMinHours,
         etaMaxHours,
         etaLabel,
@@ -130,7 +143,7 @@ async function getOrderByTracking(trackingNumber) {
   const [orders] = await pool.execute(
     `SELECT tracking_number, sender_name, sender_phone, pickup_address, receiver_name, receiver_phone,
             delivery_address, package_description, item_value, quantity, is_fragile,
-            pickup_region_id, delivery_region_id, eta_min_hours, eta_max_hours, eta_label,
+            pickup_region_id, delivery_region_id, delivery_region_area_id, eta_min_hours, eta_max_hours, eta_label,
             price, status, created_at, updated_at
      FROM orders WHERE tracking_number = ?`,
     [trackingNumber]
@@ -159,7 +172,7 @@ async function getAllOrders() {
   const [orders] = await pool.execute(
     `SELECT id, tracking_number, sender_name, receiver_name, pickup_address, delivery_address,
             package_description, item_value, quantity, is_fragile,
-            pickup_region_id, delivery_region_id, eta_min_hours, eta_max_hours, eta_label,
+            pickup_region_id, delivery_region_id, delivery_region_area_id, eta_min_hours, eta_max_hours, eta_label,
             price, status, created_at, updated_at
      FROM orders ORDER BY created_at DESC`
   );
@@ -191,7 +204,7 @@ async function getOrdersByUserId(userId) {
   const [orders] = await pool.execute(
     `SELECT id, tracking_number, sender_name, receiver_name, pickup_address, delivery_address,
             package_description, item_value, quantity, is_fragile,
-            pickup_region_id, delivery_region_id, eta_min_hours, eta_max_hours, eta_label,
+            pickup_region_id, delivery_region_id, delivery_region_area_id, eta_min_hours, eta_max_hours, eta_label,
             price, status, created_at, updated_at
      FROM orders WHERE user_id = ? ORDER BY created_at DESC`,
     [userId]

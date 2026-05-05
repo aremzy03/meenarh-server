@@ -19,4 +19,14 @@ async function listDeliveries(req, res, next) {
   }
 }
 
-module.exports = { listPickups, listDeliveries };
+async function listDeliveryAreas(req, res, next) {
+  try {
+    const { delivery_region_id: deliveryId } = req.deliveryAreasQuery;
+    const data = await regionPricing.listActiveDeliveryAreas(deliveryId);
+    res.json({ success: true, data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { listPickups, listDeliveries, listDeliveryAreas };

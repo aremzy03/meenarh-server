@@ -77,6 +77,21 @@ async function getActiveRate(pickupRegionId, deliveryRegionId) {
   };
 }
 
+async function listActiveDeliveryAreas(deliveryRegionId) {
+  const id = Number(deliveryRegionId);
+  if (!Number.isInteger(id) || id < 1) return [];
+
+  const [rows] = await pool.execute(
+    `SELECT id, name
+     FROM delivery_region_areas
+     WHERE delivery_region_id = ?
+       AND is_active = TRUE
+     ORDER BY name ASC`,
+    [id]
+  );
+  return rows;
+}
+
 async function listAllPickupsForAdmin() {
   const [rows] = await pool.execute(
     `SELECT id, name, slug, sort_order, is_active, created_at, updated_at
@@ -288,6 +303,7 @@ module.exports = {
   formatEtaDisplay,
   listActivePickups,
   listDeliveriesForPickup,
+  listActiveDeliveryAreas,
   getActiveRate,
   listAllPickupsForAdmin,
   listAllDeliveriesForAdmin,

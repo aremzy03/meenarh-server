@@ -15,6 +15,7 @@ const createOrderSchema = z.object({
   distance_km: z.number().positive().optional(),
   pickup_region_id: z.number().int().positive().optional(),
   delivery_region_id: z.number().int().positive().optional(),
+  delivery_region_area_id: z.number().int().positive().optional(),
 }).strict().superRefine((data, ctx) => {
   const hasPickup = data.pickup_region_id != null;
   const hasDelivery = data.delivery_region_id != null;

@@ -58,6 +58,7 @@ async function addToCart(itemData, userId) {
     item_value,
     quantity = 1,
     is_fragile = false,
+    delivery_region_area_id,
   } = itemData;
 
   const pricing = await resolveLinePricing(itemData);
@@ -68,9 +69,9 @@ async function addToCart(itemData, userId) {
       receiver_name, receiver_phone, delivery_address,
       package_description, item_value, quantity, is_fragile,
       zone_id, distance_km,
-      pickup_region_id, delivery_region_id, eta_min_hours, eta_max_hours, eta_label,
+      pickup_region_id, delivery_region_id, delivery_region_area_id, eta_min_hours, eta_max_hours, eta_label,
       estimated_price
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       userId,
       sender_name || null,
@@ -87,6 +88,7 @@ async function addToCart(itemData, userId) {
       pricing.distance_km,
       pricing.pickup_region_id,
       pricing.delivery_region_id,
+      delivery_region_area_id ?? null,
       pricing.eta_min_hours,
       pricing.eta_max_hours,
       pricing.eta_label,
@@ -119,6 +121,7 @@ async function updateCartItem(itemId, itemData, userId) {
     item_value,
     quantity,
     is_fragile,
+    delivery_region_area_id,
   } = itemData;
 
   const pricing = await resolveLinePricing(itemData);
@@ -139,6 +142,7 @@ async function updateCartItem(itemId, itemData, userId) {
       distance_km = ?,
       pickup_region_id = ?,
       delivery_region_id = ?,
+      delivery_region_area_id = ?,
       eta_min_hours = ?,
       eta_max_hours = ?,
       eta_label = ?,
@@ -160,6 +164,7 @@ async function updateCartItem(itemId, itemData, userId) {
       pricing.distance_km,
       pricing.pickup_region_id,
       pricing.delivery_region_id,
+      delivery_region_area_id ?? null,
       pricing.eta_min_hours,
       pricing.eta_max_hours,
       pricing.eta_label,
@@ -224,6 +229,7 @@ async function checkout(userId) {
         distance_km: item.distance_km,
         pickup_region_id: item.pickup_region_id,
         delivery_region_id: item.delivery_region_id,
+        delivery_region_area_id: item.delivery_region_area_id,
       };
 
       // Use existing order service to create order
@@ -280,6 +286,7 @@ async function checkoutSingleItem(itemId, userId) {
       distance_km: item.distance_km,
       pickup_region_id: item.pickup_region_id,
       delivery_region_id: item.delivery_region_id,
+    delivery_region_area_id: item.delivery_region_area_id,
     };
 
     // Use existing order service to create order

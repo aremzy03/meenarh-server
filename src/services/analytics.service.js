@@ -50,17 +50,23 @@ async function getLocationStats(limit = 10) {
   const safeLimit = Math.max(1, Math.min(100, parseInt(limit) || 10));
 
   const [pickupLocations] = await pool.query(
-    `SELECT pickup_address as location, COUNT(*) as request_count
-     FROM orders
-     GROUP BY pickup_address
+    `SELECT
+        COALESCE(pr.name, 'Unknown pickup area') AS location,
+        COUNT(*) AS request_count
+     FROM orders o
+     LEFT JOIN pickup_regions pr ON pr.id = o.pickup_region_id
+     GROUP BY location
      ORDER BY request_count DESC
      LIMIT ${safeLimit}`
   );
 
   const [deliveryLocations] = await pool.query(
-    `SELECT delivery_address as location, COUNT(*) as request_count
-     FROM orders
-     GROUP BY delivery_address
+    `SELECT
+        COALESCE(dr.name, 'Unknown delivery area') AS location,
+        COUNT(*) AS request_count
+     FROM orders o
+     LEFT JOIN delivery_regions dr ON dr.id = o.delivery_region_id
+     GROUP BY location
      ORDER BY request_count DESC
      LIMIT ${safeLimit}`
   );

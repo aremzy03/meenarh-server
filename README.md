@@ -170,6 +170,24 @@ This creates:
 - Island: ₦2,000 base + ₦120/km
 - Expanding: ₦2,500 base + ₦150/km
 
+#### Optional: Region-based flat pricing + ETAs (recommended)
+
+This project also supports **flat pricing** by `(pickup_region_id, delivery_region_id)` with stored **ETAs**, plus an optional list of **areas** within each delivery region.
+
+Run these migrations after `schema.sql`:
+
+```bash
+mysql -u root -p < migrations/region-pricing.sql
+mysql -u root -p < migrations/delivery-region-areas.sql
+mysql -u root -p < migrations/seed-ajah-zone-pricing.sql
+mysql -u root -p < migrations/seed-gbagada-zone-pricing.sql
+```
+
+Once applied, you can:
+- Fetch pickup regions: `GET /api/regions/pickups`
+- Fetch delivery regions for a pickup: `GET /api/regions/deliveries?pickup_region_id=...`
+- Quote a price + ETA: `GET /api/pricing/quote?pickup_region_id=...&delivery_region_id=...`
+
 ### 4. Create an Admin User
 
 ```sql

@@ -2,6 +2,7 @@ const { Router } = require('express');
 const adminController = require('../controllers/admin.controller');
 const authMiddleware = require('../middleware/auth.middleware');
 const roleMiddleware = require('../middleware/role.middleware');
+const { loginLimiter, authLimiter } = require('../middleware/rateLimit.middleware');
 const { validateLogin, validateCreateAdminUser } = require('../validators/auth.validator');
 const { adminRouter: blogAdminRouter } = require('./blog.routes');
 const { adminRouter: settingsAdminRouter } = require('./settings.routes');
@@ -12,12 +13,15 @@ const regionAdminRouter = require('./regionAdmin.routes');
 const router = Router();
 
 // Public admin route
-router.post('/login', validateLogin, adminController.login);
+router.post('/login', loginLimiter, validateLogin, adminController.login);
 
 // Protected admin routes
 router.use(authMiddleware);
 router.use(roleMiddleware('admin', 'staff'));
+router.use(authLimiter);
 
+router.get('/me', adminController.me);
+router.post('/logout', adminController.logout);
 router.get('/orders', adminController.getOrders);
 router.patch('/orders/:id/status', adminController.updateOrderStatus);
 router.get('/customers', adminController.listCustomers);

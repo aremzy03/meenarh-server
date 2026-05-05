@@ -15,12 +15,14 @@ async function handlePaystackWebhook(req, res) {
   }
 
   const signature = req.headers['x-paystack-signature'];
-  if (!signature || !(req.body instanceof Buffer)) {
+  if (!signature || typeof signature !== 'string' || !(req.body instanceof Buffer)) {
     return res.status(400).json({ success: false, message: 'Invalid webhook payload' });
   }
 
   const hash = crypto.createHmac('sha512', secret).update(req.body).digest('hex');
-  if (hash !== signature) {
+  const a = Buffer.from(hash, 'utf8');
+  const b = Buffer.from(signature, 'utf8');
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
     return res.status(400).json({ success: false, message: 'Invalid signature' });
   }
 
