@@ -18,12 +18,24 @@ async function getOverview(startDate, endDate) {
     params
   );
 
-  const [[orders]] = await pool.execute(
+  const [[singleOrders]] = await pool.execute(
     `SELECT COUNT(*) as total_orders, COALESCE(SUM(price), 0) as total_revenue
      FROM orders
      WHERE created_at BETWEEN ? AND ?`,
     params
   );
+
+  const [[bulkOrders]] = await pool.execute(
+    `SELECT COUNT(*) as total_orders, COALESCE(SUM(price), 0) as total_revenue
+     FROM bulk_orders
+     WHERE created_at BETWEEN ? AND ?`,
+    params
+  );
+
+  const orders = {
+    total_orders: (singleOrders.total_orders || 0) + (bulkOrders.total_orders || 0),
+    total_revenue: parseFloat(singleOrders.total_revenue) + parseFloat(bulkOrders.total_revenue),
+  };
 
   const [[signups]] = await pool.execute(
     `SELECT COUNT(*) as total_signups
@@ -39,7 +51,7 @@ async function getOverview(startDate, endDate) {
   return {
     total_visitors: totalVisitors,
     total_orders: totalOrders,
-    total_revenue: parseFloat(orders.total_revenue) || 0,
+    total_revenue: orders.total_revenue || 0,
     total_signups: signups.total_signups || 0,
     conversion_rate: parseFloat(conversionRate),
   };

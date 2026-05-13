@@ -3,6 +3,7 @@ const pool = require('../config/db');
 const { signToken, sessionCookieOptions } = require('../utils/jwt');
 const orderService = require('../services/order.service');
 const { sendTemplateMessage } = require('../services/whatsapp.service');
+const { sendOrderStatusUpdateEmail } = require('../services/email.service');
 
 const VALID_STATUSES = ['Order Created', 'Picked Up', 'In Transit', 'Out for Delivery', 'Delivered'];
 
@@ -38,10 +39,41 @@ async function login(req, res, next) {
   }
 }
 
-async function logout(_req, res) {
+async function logout(req, res) {
   const secure = process.env.NODE_ENV === 'production';
-  res.clearCookie('meenarh_admin_token', { path: '/', sameSite: 'lax', secure });
-  return res.json({ success: true, message: 'Logged out' });
+
+  // Mirror the attributes used when the cookie was issued (see utils/jwt.js).
+  // Some browsers only evict a cookie when path / sameSite / secure / httpOnly
+  // match what was originally set.
+  const sessionCookieAttrs = {
+    httpOnly: true,
+    secure,
+    sameSite: 'lax',
+    path: '/',
+  };
+
+  res.clearCookie('meenarh_admin_token', sessionCookieAttrs);
+
+  // Defensive: if a customer token shares this browser session, clear it too so
+  // admin logout ends all app sessions for this device.
+  if (req.cookies && req.cookies.meenarh_customer_token) {
+    res.clearCookie('meenarh_customer_token', sessionCookieAttrs);
+  }
+
+  // Rotate the CSRF cookie so the next session starts with a fresh double-submit
+  // secret. ensureCsrfCookie will mint a new token on the next request.
+  res.clearCookie('csrf_token', {
+    httpOnly: false,
+    secure,
+    sameSite: 'lax',
+    path: '/',
+  });
+
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+  res.set('Pragma', 'no-cache');
+  res.set('Clear-Site-Data', '"cookies", "storage"');
+
+  return res.status(200).json({ success: true, message: 'Logged out' });
 }
 
 async function me(req, res) {
@@ -80,16 +112,16 @@ async function updateOrderStatus(req, res, next) {
 
     await orderService.updateOrderStatus(id, status, note);
 
-    // Send WhatsApp status update (non-blocking)
+    // Send status update notifications (non-blocking)
     try {
       const [[order]] = await pool.execute(
-        'SELECT tracking_number, user_id FROM orders WHERE id = ?',
+        'SELECT id, tracking_number, user_id, updated_at FROM orders WHERE id = ?',
         [id]
       );
 
       if (order && order.user_id) {
         const [[customer]] = await pool.execute(
-          'SELECT phone, name FROM customers WHERE id = ?',
+          'SELECT email, phone, name FROM customers WHERE id = ?',
           [order.user_id]
         );
 
@@ -111,10 +143,22 @@ async function updateOrderStatus(req, res, next) {
             ],
           });
         }
+
+        if (customer && customer.email) {
+          sendOrderStatusUpdateEmail({
+            to: customer.email,
+            name: customer.name,
+            trackingNumber: order.tracking_number,
+            status,
+            note,
+            orderId: order.id,
+            updatedAt: order.updated_at,
+          });
+        }
       }
     } catch (notifyErr) {
       // eslint-disable-next-line no-console
-      console.error('[AdminController] Failed to send WhatsApp status update', notifyErr);
+      console.error('[AdminController] Failed to send order status notifications', notifyErr);
     }
 
     res.json({ success: true, message: 'Order status updated' });

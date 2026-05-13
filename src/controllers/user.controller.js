@@ -1,8 +1,20 @@
 const bcrypt = require('bcrypt');
 const userService = require('../services/user.service');
 const orderService = require('../services/order.service');
+const bulkOrderService = require('../services/bulkOrder.service');
 const { signToken, sessionCookieOptions } = require('../utils/jwt');
 const { sendTemplateMessage } = require('../services/whatsapp.service');
+const { sendEmailVerificationEmail } = require('../services/email.service');
+const {
+  isEmailVerificationFullyConfigured,
+  isEmailVerificationEnforced,
+} = require('../utils/emailVerification');
+
+function buildEmailVerificationUrl(token) {
+  const apiBase = (process.env.API_PUBLIC_URL || '').replace(/\/$/, '');
+  if (!apiBase) return null;
+  return `${apiBase}/api/user/verify-email?token=${encodeURIComponent(token)}`;
+}
 
 async function signup(req, res, next) {
   try {
@@ -14,6 +26,14 @@ async function signup(req, res, next) {
       return res.status(409).json({ success: false, message: 'Email already registered' });
     }
 
+    const verificationConfigured = isEmailVerificationFullyConfigured();
+    if (process.env.NODE_ENV === 'production' && !verificationConfigured) {
+      return res.status(503).json({
+        success: false,
+        message: 'Registration is temporarily unavailable. Please try again later.',
+      });
+    }
+
     // Create customer
     const customer = await userService.createCustomer({
       name,
@@ -22,10 +42,6 @@ async function signup(req, res, next) {
       phone,
       default_address,
     });
-
-    // Generate JWT
-    const token = signToken({ id: customer.id, email: customer.email, kind: 'customer' });
-    res.cookie('meenarh_customer_token', token, sessionCookieOptions());
 
     // Send WhatsApp phone verification code (non-blocking)
     if (customer.phone) {
@@ -37,15 +53,76 @@ async function signup(req, res, next) {
         components: [
           {
             type: 'body',
-            parameters: [
-              { type: 'text', text: customer.name || 'there' }, // {{1}}
-              { type: 'text', text: code }, // {{2}}
-              { type: 'text', text: '10' }, // {{3}} minutes (optional)
-            ],
+            // WhatsApp Authentication category: single placeholder {{1}} = 6-digit code
+            parameters: [{ type: 'text', text: code }],
           },
         ],
       });
     }
+
+    let verificationEmailSent = false;
+    if (customer.email) {
+      try {
+        const { token: emailVerifyToken } = await userService.createEmailVerificationToken(
+          customer.id
+        );
+        const verificationUrl = emailVerifyToken
+          ? buildEmailVerificationUrl(emailVerifyToken)
+          : null;
+        if (verificationUrl && verificationConfigured) {
+          const sent = await sendEmailVerificationEmail({
+            to: customer.email,
+            name: customer.name,
+            verificationUrl,
+            userId: customer.id,
+          });
+          verificationEmailSent = Boolean(sent);
+          if (process.env.NODE_ENV === 'production' && !verificationEmailSent) {
+            // eslint-disable-next-line no-console
+            console.error('[UserController] Verification email was not accepted by Resend', {
+              userId: customer.id,
+            });
+            await userService.deleteCustomerById(customer.id);
+            return res.status(502).json({
+              success: false,
+              message: 'Could not send verification email. Please try again in a moment.',
+            });
+          }
+        } else if (verificationConfigured && !verificationUrl) {
+          // eslint-disable-next-line no-console
+          console.error('[UserController] Missing verification URL after token issue', {
+            userId: customer.id,
+          });
+          if (process.env.NODE_ENV === 'production') {
+            await userService.deleteCustomerById(customer.id);
+            return res.status(500).json({
+              success: false,
+              message: 'Could not complete registration. Please try again.',
+            });
+          }
+        }
+      } catch (notifyErr) {
+        // eslint-disable-next-line no-console
+        console.error('[UserController] Failed to issue email verification token', notifyErr);
+        if (process.env.NODE_ENV === 'production') {
+          await userService.deleteCustomerById(customer.id);
+          return res.status(500).json({
+            success: false,
+            message: 'Could not complete registration. Please try again.',
+          });
+        }
+      }
+    }
+
+    if (!verificationConfigured && process.env.NODE_ENV !== 'production') {
+      // eslint-disable-next-line no-console
+      console.warn(
+        '[UserController] Signup: set API_PUBLIC_URL, RESEND_API_KEY, and EMAIL_FROM to send verification emails.'
+      );
+    }
+
+    const sessionToken = signToken({ id: customer.id, email: customer.email, kind: 'customer' });
+    res.cookie('meenarh_customer_token', sessionToken, sessionCookieOptions());
 
     res.status(201).json({
       success: true,
@@ -57,7 +134,10 @@ async function signup(req, res, next) {
           email: customer.email,
           phone: customer.phone,
           default_address: customer.default_address,
+          is_email_verified: false,
+          email_verification_enforced: isEmailVerificationEnforced(),
         },
+        verificationEmailSent,
       },
     });
   } catch (err) {
@@ -81,6 +161,15 @@ async function login(req, res, next) {
       return res.status(401).json({ success: false, message: 'Invalid email or password' });
     }
 
+    if (!customer.is_email_verified && isEmailVerificationEnforced()) {
+      return res.status(403).json({
+        success: false,
+        message:
+          'Please verify your email before signing in. Check your inbox for the verification link.',
+        code: 'EMAIL_NOT_VERIFIED',
+      });
+    }
+
     // Generate JWT
     const token = signToken({ id: customer.id, email: customer.email, kind: 'customer' });
     res.cookie('meenarh_customer_token', token, sessionCookieOptions());
@@ -95,6 +184,8 @@ async function login(req, res, next) {
           email: customer.email,
           phone: customer.phone,
           default_address: customer.default_address,
+          is_email_verified: Boolean(customer.is_email_verified),
+          email_verification_enforced: isEmailVerificationEnforced(),
         },
       },
     });
@@ -103,17 +194,59 @@ async function login(req, res, next) {
   }
 }
 
-async function logout(_req, res) {
+async function logout(req, res) {
   const secure = process.env.NODE_ENV === 'production';
-  res.clearCookie('meenarh_customer_token', { path: '/', sameSite: 'lax', secure });
-  return res.json({ success: true, message: 'Logged out' });
+
+  // Mirror the attributes used when the cookie was issued (see utils/jwt.js).
+  // Some browsers will only evict a cookie when path / sameSite / secure / httpOnly
+  // match what was originally set.
+  const sessionCookieAttrs = {
+    httpOnly: true,
+    secure,
+    sameSite: 'lax',
+    path: '/',
+  };
+
+  res.clearCookie('meenarh_customer_token', sessionCookieAttrs);
+
+  // Defensive: if an admin token happens to share this browser session, clear it
+  // too so the logout button on the user dashboard always ends *all* sessions
+  // for this device.
+  if (req.cookies && req.cookies.meenarh_admin_token) {
+    res.clearCookie('meenarh_admin_token', sessionCookieAttrs);
+  }
+
+  // Rotate the CSRF cookie so the next session does not reuse the previous
+  // double-submit secret. ensureCsrfCookie will mint a fresh one on the next
+  // request.
+  res.clearCookie('csrf_token', {
+    httpOnly: false,
+    secure,
+    sameSite: 'lax',
+    path: '/',
+  });
+
+  // Prevent intermediaries / the browser from caching an authenticated response
+  // after logout and instruct the browser to wipe cookies + storage for the API
+  // origin where possible.
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+  res.set('Pragma', 'no-cache');
+  res.set('Clear-Site-Data', '"cookies", "storage"');
+
+  return res.status(200).json({ success: true, message: 'Logged out' });
 }
 
 async function me(req, res) {
   // Auth middleware already validated token
   const customer = await userService.getCustomerById(req.user.id);
   if (!customer) return res.status(404).json({ success: false, message: 'User not found' });
-  return res.json({ success: true, data: customer });
+  return res.json({
+    success: true,
+    data: {
+      ...customer,
+      email_verification_enforced: isEmailVerificationEnforced(),
+    },
+  });
 }
 
 async function getProfile(req, res, next) {
@@ -126,7 +259,10 @@ async function getProfile(req, res, next) {
 
     res.json({
       success: true,
-      data: customer,
+      data: {
+        ...customer,
+        email_verification_enforced: isEmailVerificationEnforced(),
+      },
     });
   } catch (err) {
     next(err);
@@ -149,7 +285,10 @@ async function updateProfile(req, res, next) {
     res.json({
       success: true,
       message: 'Profile updated successfully',
-      data: updated,
+      data: {
+        ...updated,
+        email_verification_enforced: isEmailVerificationEnforced(),
+      },
     });
   } catch (err) {
     next(err);
@@ -158,11 +297,20 @@ async function updateProfile(req, res, next) {
 
 async function getOrderHistory(req, res, next) {
   try {
-    const orders = await orderService.getOrdersByUserId(req.user.id);
+    const userId = req.user.id;
+    const [singleOrders, bulkOrders] = await Promise.all([
+      orderService.getOrdersByUserId(userId),
+      bulkOrderService.getBulkOrdersByUserId(userId),
+    ]);
+
+    const combined = [
+      ...singleOrders.map((o) => ({ ...o, type: 'single' })),
+      ...bulkOrders.map((b) => ({ ...b, type: 'bulk' })),
+    ].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
     res.json({
       success: true,
-      data: orders,
+      data: combined,
     });
   } catch (err) {
     next(err);
@@ -187,11 +335,7 @@ async function requestPhoneVerification(req, res, next) {
       components: [
         {
           type: 'body',
-          parameters: [
-            { type: 'text', text: customer.name || 'there' }, // {{1}}
-            { type: 'text', text: code }, // {{2}}
-            { type: 'text', text: '10' }, // {{3}} minutes (optional)
-          ],
+          parameters: [{ type: 'text', text: code }],
         },
       ],
     });
@@ -248,6 +392,84 @@ async function verifyPhone(req, res, next) {
   }
 }
 
+function buildVerifyEmailRedirect(status) {
+  const base = (process.env.FRONTEND_BASE_URL || '').replace(/\/$/, '');
+  if (!base) return null;
+  return `${base}/dashboard/verify-email?status=${encodeURIComponent(status)}`;
+}
+
+async function verifyEmail(req, res, next) {
+  try {
+    const { token } = req.query;
+    const result = await userService.verifyEmailToken(token);
+
+    const statusKey = result.ok
+      ? 'verified'
+      : result.reason === 'EXPIRED'
+        ? 'expired'
+        : result.reason === 'ALREADY_USED'
+          ? 'already_used'
+          : 'invalid';
+
+    const redirectUrl = buildVerifyEmailRedirect(statusKey);
+    if (redirectUrl) {
+      return res.redirect(302, redirectUrl);
+    }
+
+    if (!result.ok) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid or expired verification link.',
+        reason: result.reason,
+      });
+    }
+
+    return res.json({ success: true, message: 'Email verified successfully' });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function requestEmailVerification(req, res, next) {
+  try {
+    const customer = await userService.getCustomerById(req.user.id);
+    if (!customer) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    if (!customer.email) {
+      return res.status(400).json({ success: false, message: 'Email address is required' });
+    }
+    if (customer.is_email_verified) {
+      return res.status(400).json({ success: false, message: 'Email is already verified' });
+    }
+
+    const { skipped, token } = await userService.createEmailVerificationToken(customer.id, {
+      enforceCooldown: true,
+    });
+
+    if (skipped) {
+      return res.status(429).json({
+        success: false,
+        message: 'Please wait a moment before requesting another verification email.',
+      });
+    }
+
+    const verificationUrl = buildEmailVerificationUrl(token);
+    if (verificationUrl) {
+      sendEmailVerificationEmail({
+        to: customer.email,
+        name: customer.name,
+        verificationUrl,
+        userId: customer.id,
+      });
+    }
+
+    return res.json({ success: true, message: 'Verification email sent' });
+  } catch (err) {
+    next(err);
+  }
+}
+
 module.exports = {
   signup,
   login,
@@ -259,4 +481,6 @@ module.exports = {
   requestPhoneVerification,
   verifyPhoneVerificationCode,
   verifyPhone,
+  verifyEmail,
+  requestEmailVerification,
 };

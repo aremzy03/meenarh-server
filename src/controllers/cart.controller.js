@@ -18,6 +18,24 @@ async function addToCart(req, res, next) {
   }
 }
 
+async function addBulkToCart(req, res, next) {
+  try {
+    const userId = req.user.id;
+    const result = await cartService.addBulkToCart(req.body, userId);
+
+    res.status(201).json({
+      success: true,
+      message: 'Bulk delivery added to cart',
+      data: {
+        id: result.id,
+        estimated_price: result.estimated_price,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 async function getCart(req, res, next) {
   try {
     const userId = req.user.id;
@@ -51,6 +69,25 @@ async function updateCartItem(req, res, next) {
   }
 }
 
+async function updateBulkCartEntry(req, res, next) {
+  try {
+    const userId = req.user.id;
+    const entryId = parseInt(req.params.id, 10);
+
+    const result = await cartService.updateBulkCartEntry(entryId, req.body, userId);
+
+    res.json({
+      success: true,
+      message: 'Bulk cart entry updated',
+      data: {
+        estimated_price: result.estimated_price,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 async function removeCartItem(req, res, next) {
   try {
     const userId = req.user.id;
@@ -68,6 +105,29 @@ async function removeCartItem(req, res, next) {
     res.json({
       success: true,
       message: 'Item removed from cart',
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function removeBulkCartEntry(req, res, next) {
+  try {
+    const userId = req.user.id;
+    const entryId = parseInt(req.params.id, 10);
+
+    const deleted = await cartService.removeBulkCartEntry(entryId, userId);
+
+    if (!deleted) {
+      return res.status(404).json({
+        success: false,
+        message: 'Bulk cart entry not found',
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Bulk delivery removed from cart',
     });
   } catch (err) {
     next(err);
@@ -136,9 +196,12 @@ async function checkoutSingleItem(req, res, next) {
 
 module.exports = {
   addToCart,
+  addBulkToCart,
   getCart,
   updateCartItem,
+  updateBulkCartEntry,
   removeCartItem,
+  removeBulkCartEntry,
   clearCart,
   checkout,
   checkoutSingleItem,

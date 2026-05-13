@@ -1,5 +1,6 @@
 const { Router } = require('express');
 const adminController = require('../controllers/admin.controller');
+const bulkOrderController = require('../controllers/bulkOrder.controller');
 const authMiddleware = require('../middleware/auth.middleware');
 const roleMiddleware = require('../middleware/role.middleware');
 const { loginLimiter, authLimiter } = require('../middleware/rateLimit.middleware');
@@ -24,6 +25,12 @@ router.get('/me', adminController.me);
 router.post('/logout', adminController.logout);
 router.get('/orders', adminController.getOrders);
 router.patch('/orders/:id/status', adminController.updateOrderStatus);
+
+// Bulk order admin routes
+router.get('/bulk-orders', bulkOrderController.getAllBulkOrders);
+router.get('/bulk-orders/:id', bulkOrderController.getBulkOrderDetail);
+router.patch('/bulk-orders/:bulkId/items/:itemId/status', bulkOrderController.updateBulkItemStatus);
+
 router.get('/customers', adminController.listCustomers);
 router.get('/customers/:id', adminController.getCustomerById);
 router.get('/customers/:id/orders', adminController.getCustomerOrders);

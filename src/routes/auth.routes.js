@@ -1,11 +1,13 @@
 const { Router } = require('express');
-const bcrypt = require('bcrypt');
-const pool = require('../config/db');
-const { signToken } = require('../utils/jwt');
+const userService = require('../services/user.service');
 const { publicLimiter } = require('../middleware/rateLimit.middleware');
 const { sendTemplateMessage } = require('../services/whatsapp.service');
+const { sendPasswordResetEmail } = require('../services/email.service');
 
 const router = Router();
+
+const RESET_SUCCESS_MESSAGE =
+  'If an account exists for this phone, a verification code has been sent via WhatsApp.';
 
 router.post('/forgot-password', publicLimiter, async (req, res, next) => {
   try {
@@ -15,68 +17,61 @@ router.post('/forgot-password', publicLimiter, async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'Phone is required' });
     }
 
-    const [customers] = await pool.execute(
-      'SELECT id, name, phone FROM customers WHERE phone = ?',
-      [phone]
-    );
+    const customer = await userService.getCustomerByPhone(phone);
 
-    // Always respond with success to avoid user enumeration
-    if (customers.length === 0) {
+    if (!customer || !customer.phone) {
       return res.json({
         success: true,
-        message: 'If an account exists for this phone, a reset link has been sent.',
+        message: RESET_SUCCESS_MESSAGE,
       });
     }
 
-    const customer = customers[0];
+    const { skipped, code } = await userService.createPasswordResetCode(customer.id);
 
-    const rawToken = `${customer.id}.${Date.now()}.${Math.random().toString(36).slice(2, 10)}`;
-    const tokenHash = await bcrypt.hash(rawToken, 10);
-    const expiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 minutes
+    if (!skipped && code) {
+      if (customer.phone) {
+        sendTemplateMessage({
+          to: customer.phone,
+          templateName: 'password_reset_code',
+          languageCode: 'en',
+          components: [
+            {
+              type: 'body',
+              parameters: [{ type: 'text', text: code }],
+            },
+          ],
+        });
+      }
 
-    await pool.execute(
-      `INSERT INTO password_resets (user_id, token_hash, expires_at, used)
-       VALUES (?, ?, ?, 0)`,
-      [customer.id, tokenHash, expiresAt]
-    );
-
-    const frontendBaseUrl = process.env.FRONTEND_BASE_URL;
-    if (frontendBaseUrl && customer.phone) {
-      const resetUrl = `${frontendBaseUrl.replace(/\/$/, '')}/reset-password?token=${encodeURIComponent(
-        rawToken
-      )}`;
-
-      sendTemplateMessage({
-        to: customer.phone,
-        templateName: 'password_reset_link',
-        languageCode: 'en',
-        components: [
-          {
-            type: 'body',
-            parameters: [
-              { type: 'text', text: customer.name || 'there' },
-              { type: 'text', text: resetUrl },
-            ],
-          },
-        ],
-      });
+      if (customer.email) {
+        sendPasswordResetEmail({
+          to: customer.email,
+          name: customer.name,
+          code,
+          userId: customer.id,
+        });
+      }
     }
 
     return res.json({
       success: true,
-      message: 'If an account exists for this phone, a reset link has been sent.',
+      message: RESET_SUCCESS_MESSAGE,
     });
   } catch (err) {
     next(err);
   }
 });
 
+const GENERIC_RESET_FAILURE = 'Invalid or expired code.';
+
 router.post('/reset-password', publicLimiter, async (req, res, next) => {
   try {
-    const { token, newPassword } = req.body;
+    const { phone, code, newPassword } = req.body;
 
-    if (!token || !newPassword) {
-      return res.status(400).json({ success: false, message: 'Token and newPassword are required' });
+    if (!phone || !code || !newPassword) {
+      return res
+        .status(400)
+        .json({ success: false, message: 'Phone, code, and newPassword are required' });
     }
 
     if (newPassword.length < 6) {
@@ -86,42 +81,21 @@ router.post('/reset-password', publicLimiter, async (req, res, next) => {
       });
     }
 
-    const [rows] = await pool.execute(
-      `SELECT id, user_id, token_hash, expires_at, used
-       FROM password_resets
-       WHERE used = 0
-       ORDER BY created_at DESC
-       LIMIT 50`
-    );
+    const result = await userService.resetPasswordWithOtp({
+      phone,
+      code,
+      newPassword,
+    });
 
-    let matchRow = null;
-    // Find matching token with constant-time comparison at bcrypt level
-    // eslint-disable-next-line no-restricted-syntax
-    for (const row of rows) {
-      // eslint-disable-next-line no-await-in-loop
-      const match = await bcrypt.compare(token, row.token_hash);
-      if (match) {
-        matchRow = row;
-        break;
+    if (!result.ok) {
+      if (result.reason === 'INVALID_CODE_FORMAT') {
+        return res.status(400).json({
+          success: false,
+          message: 'Enter the 6-digit code sent to your WhatsApp.',
+        });
       }
+      return res.status(400).json({ success: false, message: GENERIC_RESET_FAILURE });
     }
-
-    if (!matchRow) {
-      return res.status(400).json({ success: false, message: 'Invalid or expired token' });
-    }
-
-    if (new Date(matchRow.expires_at).getTime() < Date.now()) {
-      return res.status(400).json({ success: false, message: 'Invalid or expired token' });
-    }
-
-    const passwordHash = await bcrypt.hash(newPassword, 10);
-
-    await pool.execute('UPDATE customers SET password_hash = ? WHERE id = ?', [
-      passwordHash,
-      matchRow.user_id,
-    ]);
-
-    await pool.execute('UPDATE password_resets SET used = 1 WHERE id = ?', [matchRow.id]);
 
     return res.json({ success: true, message: 'Password reset successful' });
   } catch (err) {
@@ -130,4 +104,3 @@ router.post('/reset-password', publicLimiter, async (req, res, next) => {
 });
 
 module.exports = router;
-

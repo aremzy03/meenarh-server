@@ -8,7 +8,8 @@ This document defines:
 Applies to `meenarh-server` (WhatsApp Cloud API via Meta Graph API) and the templates referenced in code:
 - `phone_verification_code`
 - `phone_verification_link` (deprecated)
-- `password_reset_link`
+- `password_reset_code`
+- `password_reset_link` (deprecated)
 - `order_confirmation`
 - `order_status_update`
 
@@ -77,7 +78,7 @@ async function sendTemplateMessage({ to, templateName, languageCode = 'en', comp
 2) Go to **Account tools → Message templates**.
 3) Click **Create template**.
 4) Set:
-   - **Category**: Use **Utility** for these transactional/account messages.
+   - **Category**: **Authentication** for one-time OTP (`phone_verification_code`); **Utility** for other transactional templates listed here unless policy dictates otherwise.
    - **Language**: **English** (`en`)
    - **Name**: Must match exactly (see template specs below).
 5) In the **Body**, add placeholders exactly as specified (e.g. `{{1}}`, `{{2}}`).
@@ -97,35 +98,30 @@ Important:
 
 All templates below are designed to:
 - match the current backend parameter order,
-- stay within policy expectations (clear purpose, no sensitive data requests),
-- be suitable for **Utility** category.
+- stay within policy expectations (clear purpose, no sensitive data requests).
+
+Use **`phone_verification_code`** and **`password_reset_code`** as **Authentication** (one placeholder each). Other transactional templates (`order_*`) typically use **Utility** unless Meta requires a different category.
 
 ### 1) `phone_verification_code`
 
-- **Category**: Utility
+- **Category**: **Authentication** (WhatsApp Manager allows **one variable placeholder** for this category.)
 - **Language**: English (`en`)
-- **Backend placeholders**:
-  - `{{1}}`: customer name
-  - `{{2}}`: 6-digit verification code
-  - `{{3}}`: expiry minutes (e.g. `10`)
+- **Backend placeholder** (body):
+  - `{{1}}`: **6-digit verification code only**
 
-**Template content**
-- **Header** (optional): `Verify your phone`
-- **Body**:
+All other wording (business name, expiry hint, disclaimers) must be **fixed text** in the template—not variables—so the template stays compliant with Authentication rules.
+
+**Template content (example; adjust fixed text to match your approved submission)**
+
+- **Body** (exactly **one** `{{1}}`):
 
 ```text
-Hi {{1}}, your Meenarh Logistics verification code is:
-{{2}}
-
-This code expires in {{3}} minutes.
-If you didn’t create an account, ignore this message.
+Your Meenarh Logistics verification code is {{1}}. It expires in 10 minutes. If you did not request this, ignore this message.
 ```
 
-- **Footer** (optional): `Meenarh Logistics`
+Backend mapping reference (single parameter = `{{1}}`):
 
-Backend mapping reference:
-
-```30:55:/home/aremzy03/Document/cursor_projects/meenarh/meenarh-server/src/controllers/user.controller.js
+```javascript
 sendTemplateMessage({
   to: customer.phone,
   templateName: 'phone_verification_code',
@@ -133,15 +129,13 @@ sendTemplateMessage({
   components: [
     {
       type: 'body',
-      parameters: [
-        { type: 'text', text: customer.name || 'there' }, // {{1}}
-        { type: 'text', text: code },                     // {{2}}
-        { type: 'text', text: '10' },                     // {{3}}
-      ],
+      parameters: [{ type: 'text', text: code }], // {{1}}
     },
   ],
 });
 ```
+
+**Note**: After you recreate or edit the template in WhatsApp Manager, ensure the submitted body has **only one** variable and that Meta’s Authentication template rules are satisfied before going live.
 
 ---
 
@@ -179,40 +173,49 @@ parameters: [
 
 ---
 
-### 3) `password_reset_link`
+### 3) `password_reset_code`
 
-- **Category**: Utility
+- **Category**: **Authentication** (one variable placeholder: the 6-digit code.)
 - **Language**: English (`en`)
-- **Backend placeholders**:
-  - `{{1}}`: customer name
-  - `{{2}}`: reset link (frontend URL: `/reset-password?token=...`)
+- **Backend placeholder** (body):
+  - `{{1}}`: **6-digit password reset code only**
 
-**Template content**
-- **Header** (optional): `Password reset`
-- **Body**:
+Use fixed text in the approved template for branding, expiry hints, and “if you didn’t request this” disclaimers—not extra variables.
+
+**Template content (example; align fixed text with your WhatsApp submission)**
 
 ```text
-Hi {{1}}, we received a request to reset your Meenarh Logistics password.
-Reset it here:
-{{2}}
-
-If you didn’t request this, ignore this message.
+Your Meenarh Logistics password reset code is {{1}}. It expires in 10 minutes. If you didn’t request a reset, ignore this message.
 ```
-
-- **Footer** (optional): `Meenarh Logistics`
 
 Backend mapping reference:
 
-```49:63:/home/aremzy03/Document/cursor_projects/meenarh/meenarh-server/src/routes/auth.routes.js
-parameters: [
-  { type: 'text', text: customer.name || 'there' }, // {{1}}
-  { type: 'text', text: resetUrl },                 // {{2}}
-],
+```javascript
+sendTemplateMessage({
+  to: customer.phone,
+  templateName: 'password_reset_code',
+  languageCode: 'en',
+  components: [
+    {
+      type: 'body',
+      parameters: [{ type: 'text', text: code }], // {{1}}
+    },
+  ],
+});
 ```
 
 ---
 
-### 3) `order_confirmation`
+### 4) `password_reset_link` (deprecated)
+
+- **Category**: Utility (historical)
+- **Status**: Deprecated. The backend now sends **`password_reset_code`** (OTP) from `POST /api/auth/forgot-password` instead of a reset URL.
+
+Previously: `{{1}}` customer name, `{{2}}` reset link (`/reset-password?token=...`). No longer sent by `meenarh-server`.
+
+---
+
+### 5) `order_confirmation`
 
 - **Category**: Utility
 - **Language**: English (`en`)
@@ -247,7 +250,7 @@ parameters: [
 
 ---
 
-### 4) `order_status_update`
+### 6) `order_status_update`
 
 - **Category**: Utility
 - **Language**: English (`en`)
@@ -280,6 +283,39 @@ parameters: [
   note ? { type: 'text', text: note } : { type: 'text', text: '' }, // {{4}}
 ],
 ```
+
+---
+
+## Bulk order notification templates
+
+These templates reuse the same approved template names as single orders. The
+controller (`bulkOrder.controller.js`) passes the **bulk tracking number** and a
+per-item context so customers can identify which parcel moved.
+
+### `order_confirmation` (bulk)
+
+Used in `bulkOrder.controller.createBulkOrder`. The template variables sent:
+
+| Placeholder | Value |
+|---|---|
+| `{{1}}` | customer name |
+| `{{2}}` | bulk tracking number (e.g. `MN-B-2026-0001`) |
+| `{{3}}` | total price string (e.g. `₦5,000`) |
+
+### `order_status_update` (bulk item)
+
+Used in `bulkOrder.controller.updateBulkItemStatus`. The template variables sent:
+
+| Placeholder | Value |
+|---|---|
+| `{{1}}` | customer name |
+| `{{2}}` | bulk tracking number |
+| `{{3}}` | new item status (e.g. `In Transit`) |
+| `{{4}}` | note + receiver context (e.g. `Item #2 (John Doe at 5 Palm Street): Picked Up`) |
+
+The `{{4}}` note is constructed in the controller as:
+`Item #<sort_index + 1> (<receiver_name> at <delivery_address>): <status>` so the
+customer can identify exactly which leg updated when multiple items are in flight.
 
 ---
 

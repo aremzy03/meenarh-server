@@ -34,10 +34,12 @@ async function getPromoCodeById(id) {
   const [usage] = await pool.execute(
     `SELECT pu.id, pu.discount_applied, pu.used_at,
             c.name as customer_name, c.email as customer_email,
-            o.tracking_number
+            o.tracking_number,
+            pi.reference as payment_reference
      FROM promo_usage pu
      LEFT JOIN customers c ON pu.customer_id = c.id
      LEFT JOIN orders o ON pu.order_id = o.id
+     LEFT JOIN payment_intents pi ON pu.payment_intent_id = pi.id
      WHERE pu.promo_code_id = ?
      ORDER BY pu.used_at DESC`,
     [id]
@@ -123,10 +125,18 @@ async function validatePromoCode(code, orderTotal) {
   };
 }
 
-async function recordUsage(promoCodeId, customerId, orderId, discountApplied) {
+async function recordUsage({
+  promoCodeId,
+  customerId,
+  orderId = null,
+  paymentIntentId = null,
+  discountApplied,
+}) {
   await pool.execute(
-    'INSERT INTO promo_usage (promo_code_id, customer_id, order_id, discount_applied) VALUES (?, ?, ?, ?)',
-    [promoCodeId, customerId, orderId, discountApplied]
+    `INSERT INTO promo_usage (
+      promo_code_id, customer_id, payment_intent_id, order_id, discount_applied
+    ) VALUES (?, ?, ?, ?, ?)`,
+    [promoCodeId, customerId, paymentIntentId, orderId, discountApplied]
   );
   await pool.execute(
     'UPDATE promo_codes SET current_uses = current_uses + 1 WHERE id = ?',

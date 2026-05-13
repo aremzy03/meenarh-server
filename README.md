@@ -1306,6 +1306,77 @@ All errors follow this format:
 
 In development mode, errors also include a `stack` field for debugging.
 
+## Bulk Orders
+
+Bulk shipments allow a customer to send multiple parcels in a single request. Each item
+can have its own pickup zone and an optional per-item street-address override; pricing is
+the sum of the region-pair rates for every individual line.
+
+### Creating a bulk order
+
+```
+POST /api/bulk-orders
+Authorization: Bearer <token>
+```
+
+**Shared parent fields** (all optional — fall back to customer profile defaults):
+
+```json
+{
+  "sender_name": "Amara Obi",
+  "sender_phone": "08012345678",
+  "pickup_address": "5 Lagos Street, Ikeja",
+  "items": [...]
+}
+```
+
+**Each item** must include its own pickup region, delivery region, receiver details,
+and optionally a pickup address override:
+
+```json
+{
+  "pickup_region_id": 1,
+  "pickup_address": "10 Broad Street, Lagos",
+  "delivery_region_id": 3,
+  "delivery_region_area_id": 12,
+  "delivery_address": "22 Fela Crescent, Abuja",
+  "receiver_name": "Chidi Nwosu",
+  "receiver_phone": "07011223344",
+  "package_description": "Laptop",
+  "quantity": 1,
+  "is_fragile": true
+}
+```
+
+A minimum of **2 items** is required. The response includes:
+- A unique tracking number with prefix `MN-B-` (e.g. `MN-B-2026-0001`)
+- The total price (sum of per-item region-pair rates)
+- Per-item initial status: `Pending`
+- Parent bulk status: `Order Created`
+
+### Lifecycle
+
+```
+Bulk parent: Order Created (immutable in v1)
+
+Each item independently:
+  Pending → Picked Up → In Transit → Out for Delivery → Delivered
+```
+
+Admin advances each line separately via:
+
+```
+PATCH /api/admin/bulk-orders/:bulkId/items/:itemId/status
+{ "status": "Picked Up", "note": "Collected from Lagos hub" }
+```
+
+### Analytics
+
+`analytics.service.js` aggregates order counts and revenue from **both** `orders`
+and `bulk_orders` tables, so the dashboard totals include all shipment types.
+
+---
+
 ## License
 
 ISC
