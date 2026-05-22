@@ -17,7 +17,11 @@ function validateLogin(req, res, next) {
 
   if (!result.success) {
     const errors = result.error.issues.map((i) => i.message);
-    return res.status(400).json({ success: false, message: 'Validation failed', errors });
+    return res.status(400).json({
+      success: false,
+      message: errors[0] || 'Validation failed',
+      errors,
+    });
   }
 
   req.body = result.data;
@@ -29,7 +33,11 @@ function validateCreateAdminUser(req, res, next) {
 
   if (!result.success) {
     const errors = result.error.issues.map((i) => i.message);
-    return res.status(400).json({ success: false, message: 'Validation failed', errors });
+    return res.status(400).json({
+      success: false,
+      message: errors[0] || 'Validation failed',
+      errors,
+    });
   }
 
   req.body = result.data;

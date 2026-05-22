@@ -5,13 +5,24 @@ const phoneSchema = z
   .min(7, 'Valid phone number is required')
   .regex(/^\+?[0-9]{7,15}$/, 'Phone number must be digits and may start with +');
 
+/** Treat missing, null, or blank strings as absent; validate length only when provided. */
+const optionalAddressSchema = z.preprocess(
+  (val) => {
+    if (val === undefined || val === null) return undefined;
+    if (typeof val !== 'string') return val;
+    const trimmed = val.trim();
+    return trimmed === '' ? undefined : trimmed;
+  },
+  z.string().min(5, 'Address must be at least 5 characters').optional()
+);
+
 const signupSchema = z
   .object({
     name: z.string().min(2, 'Name is required (minimum 2 characters)'),
     email: z.string().email('Valid email is required'),
     password: z.string().min(6, 'Password must be at least 6 characters'),
     phone: phoneSchema,
-    default_address: z.string().min(5, 'Address must be at least 5 characters').optional(),
+    default_address: optionalAddressSchema,
   })
   .strict();
 
@@ -23,7 +34,7 @@ const loginSchema = z.object({
 const updateProfileSchema = z
   .object({
     phone: phoneSchema.optional(),
-    default_address: z.string().min(5, 'Address must be at least 5 characters').optional(),
+    default_address: optionalAddressSchema,
   })
   .strict()
   .refine(
@@ -36,7 +47,11 @@ function validateSignup(req, res, next) {
 
   if (!result.success) {
     const errors = result.error.issues.map((i) => i.message);
-    return res.status(400).json({ success: false, message: 'Validation failed', errors });
+    return res.status(400).json({
+      success: false,
+      message: errors[0] || 'Validation failed',
+      errors,
+    });
   }
 
   req.body = result.data;
@@ -48,7 +63,11 @@ function validateLogin(req, res, next) {
 
   if (!result.success) {
     const errors = result.error.issues.map((i) => i.message);
-    return res.status(400).json({ success: false, message: 'Validation failed', errors });
+    return res.status(400).json({
+      success: false,
+      message: errors[0] || 'Validation failed',
+      errors,
+    });
   }
 
   req.body = result.data;
@@ -60,7 +79,11 @@ function validateUpdateProfile(req, res, next) {
 
   if (!result.success) {
     const errors = result.error.issues.map((i) => i.message);
-    return res.status(400).json({ success: false, message: 'Validation failed', errors });
+    return res.status(400).json({
+      success: false,
+      message: errors[0] || 'Validation failed',
+      errors,
+    });
   }
 
   req.body = result.data;
