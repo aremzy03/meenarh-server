@@ -1,20 +1,19 @@
 # Resend Email Implementation
 
-Companion document to [`WHATSAPP_POLICY_AND_TEMPLATES.md`](./WHATSAPP_POLICY_AND_TEMPLATES.md). Where WhatsApp owns approval-gated transactional alerts on phone, Resend owns transactional **email** for the same lifecycle events plus one email-only flow (verification link). Both channels fire in parallel from the same trigger points and are independently best-effort.
+Transactional notifications are delivered **only via email** (Resend). Phone OTP and WhatsApp Cloud API templates have been removed; customers verify identity by email link and receive order/auth alerts in the inbox.
 
 ---
 
 ## 1. Channel role & scope
 
-| Capability                       | WhatsApp                              | Resend (Email)                                |
-| -------------------------------- | ------------------------------------- | --------------------------------------------- |
-| Order confirmation               | ❌ (gap in legacy code)                | ✅ `sendOrderConfirmationEmail`                |
-| Order status updates             | ✅ template `order_status_update`      | ✅ `sendOrderStatusUpdateEmail`                |
-| Password reset code (OTP)        | ✅ template `password_reset_code`      | ✅ `sendPasswordResetEmail`                    |
-| Phone verification code (OTP)    | ✅ template `phone_verification_code`  | ⛔ intentionally not duplicated on email      |
-| Email verification (link)        | n/a                                   | ✅ `sendEmailVerificationEmail` (only channel) |
+| Capability                | Resend (Email)                                |
+| ------------------------- | --------------------------------------------- |
+| Order confirmation        | ✅ `sendOrderConfirmationEmail`                |
+| Order status updates      | ✅ `sendOrderStatusUpdateEmail`                |
+| Password reset code (OTP) | ✅ `sendPasswordResetEmail`                    |
+| Email verification (link) | ✅ `sendEmailVerificationEmail`                |
 
-> **Design principle.** Email never blocks the HTTP response. Every send is fired without `await` from the controller, mirrors the WhatsApp service's non-blocking pattern, and silently no-ops when `RESEND_API_KEY` / `EMAIL_FROM` are unset.
+> **Design principle.** Email never blocks the HTTP response. Every send is fired without `await` from the controller and silently no-ops when `RESEND_API_KEY` / `EMAIL_FROM` are unset.
 
 ---
 
@@ -224,7 +223,7 @@ sendPasswordResetEmail({ to, name, code, userId })
 
 **Subject** `Your Meenarh Logistics password reset code`
 **Preheader** `Password reset code inside · expires in 10 minutes`
-**Fires from** `src/routes/auth.routes.js → POST /auth/forgot-password`, in parallel with the WhatsApp `password_reset_code` template.
+**Fires from** `src/routes/auth.routes.js → POST /auth/forgot-password` (email-only).
 
 **OTP display** — the 6-digit code sits inside an **accent-tinted block** (`#e0e9cf` on `#f9faf4` card) with the digits set in mono at `30px` / `letter-spacing: 8px` / `font-weight: 700`. This is the email equivalent of the web's accent-highlighted call-out panel pattern. Expiry copy underneath is muted 13 px text.
 
@@ -277,10 +276,8 @@ The CTA link targets `GET /api/user/verify-email?token=…`, which `userControll
 | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | `RESEND_API_KEY` and/or `EMAIL_FROM` unset          | Warn once at boot; every `sendEmail*` call resolves to `undefined` without throwing. App routes still serve. |
 | `API_PUBLIC_URL` unset (verification only)          | `signup` and `requestEmailVerification` succeed and create the token, but no email is sent (URL is `null`).  |
-| Customer has no `email` on file                     | Email path is skipped at the controller level; WhatsApp (where applicable) still fires.                      |
+| Customer has no `email` on file                     | Email path is skipped at the controller level.                                                             |
 | Resend API returns an error or throws               | Logged via `console.error` with the subject + recipient; no exception propagates to the controller.          |
-
-This mirrors the exact contract of `whatsapp.service.js` so operators reasoning about one channel can reason about the other.
 
 ---
 
@@ -303,9 +300,10 @@ This mirrors the exact contract of `whatsapp.service.js` so operators reasoning 
 | [`src/services/email.service.js`](./src/services/email.service.js)  | All four templates + shared shell, Resend client, send helper. |
 | [`src/services/user.service.js`](./src/services/user.service.js)    | `createEmailVerificationToken`, `verifyEmailToken` (hashed tokens, 24 h TTL, 60 s resend cooldown). |
 | [`src/controllers/user.controller.js`](./src/controllers/user.controller.js) | Fires verification email on signup; `verifyEmail` redirect handler; `requestEmailVerification` resend. |
-| [`src/controllers/order.controller.js`](./src/controllers/order.controller.js) | Fires order-confirmation email alongside the WhatsApp send.    |
-| [`src/controllers/admin.controller.js`](./src/controllers/admin.controller.js) | Fires status-update email alongside the WhatsApp send.         |
-| [`src/routes/auth.routes.js`](./src/routes/auth.routes.js)          | Fires password-reset email alongside the WhatsApp send.        |
+| [`src/controllers/order.controller.js`](./src/controllers/order.controller.js) | Fires order-confirmation email.                                |
+| [`src/controllers/admin.controller.js`](./src/controllers/admin.controller.js) | Fires status-update email.                                     |
+| [`src/routes/auth.routes.js`](./src/routes/auth.routes.js)          | Fires password-reset email.                                    |
+| [`migrations/remove-phone-verification.sql`](./migrations/remove-phone-verification.sql) | Drops `phone_verifications` and `customers.is_phone_verified`. |
 | [`src/routes/user.routes.js`](./src/routes/user.routes.js)          | Registers `GET /verify-email` (public) and `POST /email-verification/request` (authed). |
 | [`migrations/email-verification-and-flag.sql`](./migrations/email-verification-and-flag.sql) | Adds `customers.is_email_verified` + `email_verifications` table. |
 | [`.env.example`](./.env.example)                                    | Documents `RESEND_API_KEY`, `EMAIL_FROM`, and the URL bases.   |

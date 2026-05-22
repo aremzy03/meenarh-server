@@ -211,7 +211,7 @@ async function createBulkOrderFromSnapshot(userId, snapshot, conn = null) {
 }
 
 /**
- * Send WhatsApp + email notifications for a placed bulk order.
+ * Send email notification for a placed bulk order.
  * Non-blocking: caller should catch and log but never let failures surface to the user.
  *
  * @param {number} userId
@@ -219,32 +219,13 @@ async function createBulkOrderFromSnapshot(userId, snapshot, conn = null) {
  */
 async function notifyBulkOrderPlaced(userId, { trackingNumber, totalPrice }) {
   try {
-    const { sendTemplateMessage } = require('./whatsapp.service');
     const { sendOrderConfirmationEmail } = require('./email.service');
 
     const [customers] = await pool.execute(
-      'SELECT email, phone, name FROM customers WHERE id = ?',
+      'SELECT email, name FROM customers WHERE id = ?',
       [userId]
     );
     const customer = customers[0];
-
-    if (customer?.phone) {
-      sendTemplateMessage({
-        to: customer.phone,
-        templateName: 'order_confirmation',
-        languageCode: 'en',
-        components: [
-          {
-            type: 'body',
-            parameters: [
-              { type: 'text', text: customer.name || 'there' },
-              { type: 'text', text: trackingNumber },
-              { type: 'text', text: String(totalPrice ?? '') },
-            ],
-          },
-        ],
-      });
-    }
 
     if (customer?.email) {
       sendOrderConfirmationEmail({

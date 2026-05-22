@@ -2,7 +2,6 @@ const bcrypt = require('bcrypt');
 const pool = require('../config/db');
 const { signToken, sessionCookieOptions } = require('../utils/jwt');
 const orderService = require('../services/order.service');
-const { sendTemplateMessage } = require('../services/whatsapp.service');
 const { sendOrderStatusUpdateEmail } = require('../services/email.service');
 
 const VALID_STATUSES = ['Order Created', 'Picked Up', 'In Transit', 'Out for Delivery', 'Delivered'];
@@ -121,28 +120,9 @@ async function updateOrderStatus(req, res, next) {
 
       if (order && order.user_id) {
         const [[customer]] = await pool.execute(
-          'SELECT email, phone, name FROM customers WHERE id = ?',
+          'SELECT email, name FROM customers WHERE id = ?',
           [order.user_id]
         );
-
-        if (customer && customer.phone) {
-          sendTemplateMessage({
-            to: customer.phone,
-            templateName: 'order_status_update',
-            languageCode: 'en',
-            components: [
-              {
-                type: 'body',
-                parameters: [
-                  { type: 'text', text: customer.name || 'there' },
-                  { type: 'text', text: order.tracking_number },
-                  { type: 'text', text: status },
-                  note ? { type: 'text', text: note } : { type: 'text', text: '' },
-                ],
-              },
-            ],
-          });
-        }
 
         if (customer && customer.email) {
           sendOrderStatusUpdateEmail({

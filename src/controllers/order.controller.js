@@ -1,6 +1,5 @@
 const orderService = require('../services/order.service');
 const bulkOrderService = require('../services/bulkOrder.service');
-const { sendTemplateMessage } = require('../services/whatsapp.service');
 const { sendOrderConfirmationEmail } = require('../services/email.service');
 const pool = require('../config/db');
 
@@ -9,31 +8,13 @@ async function createOrder(req, res, next) {
     const userId = req.user.id;
     const result = await orderService.createOrder(req.body, userId);
 
-    // Send order confirmation notifications (non-blocking)
+    // Send order confirmation email (non-blocking)
     try {
       const [customers] = await pool.execute(
-        'SELECT email, phone, name FROM customers WHERE id = ?',
+        'SELECT email, name FROM customers WHERE id = ?',
         [userId]
       );
       const customer = customers[0];
-
-      if (customer && customer.phone) {
-        sendTemplateMessage({
-          to: customer.phone,
-          templateName: 'order_confirmation',
-          languageCode: 'en',
-          components: [
-            {
-              type: 'body',
-              parameters: [
-                { type: 'text', text: customer.name || 'there' },
-                { type: 'text', text: result.trackingNumber },
-                { type: 'text', text: String(result.price ?? '') },
-              ],
-            },
-          ],
-        });
-      }
 
       if (customer && customer.email) {
         sendOrderConfirmationEmail({
@@ -46,7 +27,7 @@ async function createOrder(req, res, next) {
       }
     } catch (notifyErr) {
       // eslint-disable-next-line no-console
-      console.error('[OrderController] Failed to send order confirmation notifications', notifyErr);
+      console.error('[OrderController] Failed to send order confirmation email', notifyErr);
     }
     res.status(201).json({
       success: true,

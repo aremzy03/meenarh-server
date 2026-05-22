@@ -1,5 +1,4 @@
 const bulkOrderService = require('../services/bulkOrder.service');
-const { sendTemplateMessage } = require('../services/whatsapp.service');
 const { sendOrderStatusUpdateEmail } = require('../services/email.service');
 const pool = require('../config/db');
 
@@ -99,28 +98,9 @@ async function updateBulkItemStatus(req, res, next) {
 
       if (bulk?.user_id) {
         const [[customer]] = await pool.execute(
-          'SELECT email, phone, name FROM customers WHERE id = ?',
+          'SELECT email, name FROM customers WHERE id = ?',
           [bulk.user_id]
         );
-
-        if (customer?.phone) {
-          sendTemplateMessage({
-            to: customer.phone,
-            templateName: 'order_status_update',
-            languageCode: 'en',
-            components: [
-              {
-                type: 'body',
-                parameters: [
-                  { type: 'text', text: customer.name || 'there' },
-                  { type: 'text', text: `${bulk.tracking_number} (${item?.receiver_name || 'item'})` },
-                  { type: 'text', text: status },
-                  { type: 'text', text: note || '' },
-                ],
-              },
-            ],
-          });
-        }
 
         if (customer?.email) {
           sendOrderStatusUpdateEmail({

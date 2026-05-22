@@ -11,7 +11,6 @@ const router = Router();
 // Public routes
 router.post('/signup', validateSignup, userController.signup);
 router.post('/login', loginLimiter, validateLogin, userController.login);
-router.get('/verify-phone', userController.verifyPhone);
 router.get('/verify-email', userController.verifyEmail);
 
 // Protected routes
@@ -25,8 +24,6 @@ router.post('/email-verification/request', userController.requestEmailVerificati
 
 router.use(requireCustomerEmailVerified);
 
-router.post('/phone-verification/request', userController.requestPhoneVerification);
-router.post('/phone-verification/verify', userController.verifyPhoneVerificationCode);
 router.get('/profile', userController.getProfile);
 router.patch('/profile', validateUpdateProfile, userController.updateProfile);
 router.get('/orders', userController.getOrderHistory);

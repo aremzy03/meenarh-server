@@ -3,7 +3,6 @@ const userService = require('../services/user.service');
 const orderService = require('../services/order.service');
 const bulkOrderService = require('../services/bulkOrder.service');
 const { signToken, sessionCookieOptions } = require('../utils/jwt');
-const { sendTemplateMessage } = require('../services/whatsapp.service');
 const { sendEmailVerificationEmail } = require('../services/email.service');
 const {
   isEmailVerificationFullyConfigured,
@@ -42,23 +41,6 @@ async function signup(req, res, next) {
       phone,
       default_address,
     });
-
-    // Send WhatsApp phone verification code (non-blocking)
-    if (customer.phone) {
-      const { code } = await userService.createPhoneVerificationCode(customer.id);
-      sendTemplateMessage({
-        to: customer.phone,
-        templateName: 'phone_verification_code',
-        languageCode: 'en',
-        components: [
-          {
-            type: 'body',
-            // WhatsApp Authentication category: single placeholder {{1}} = 6-digit code
-            parameters: [{ type: 'text', text: code }],
-          },
-        ],
-      });
-    }
 
     let verificationEmailSent = false;
     if (customer.email) {
@@ -317,81 +299,6 @@ async function getOrderHistory(req, res, next) {
   }
 }
 
-async function requestPhoneVerification(req, res, next) {
-  try {
-    const customer = await userService.getCustomerById(req.user.id);
-    if (!customer) {
-      return res.status(404).json({ success: false, message: 'User not found' });
-    }
-    if (!customer.phone) {
-      return res.status(400).json({ success: false, message: 'Phone number is required' });
-    }
-
-    const { code } = await userService.createPhoneVerificationCode(customer.id);
-    sendTemplateMessage({
-      to: customer.phone,
-      templateName: 'phone_verification_code',
-      languageCode: 'en',
-      components: [
-        {
-          type: 'body',
-          parameters: [{ type: 'text', text: code }],
-        },
-      ],
-    });
-
-    return res.json({ success: true, message: 'Verification code sent' });
-  } catch (err) {
-    next(err);
-  }
-}
-
-async function verifyPhoneVerificationCode(req, res, next) {
-  try {
-    const { code } = req.body;
-    if (!code) {
-      return res.status(400).json({ success: false, message: 'Code is required' });
-    }
-
-    const result = await userService.verifyPhoneCode(req.user.id, code);
-    if (!result.ok) {
-      const message =
-        result.reason === 'EXPIRED'
-          ? 'Verification code expired'
-          : result.reason === 'TOO_MANY_ATTEMPTS'
-            ? 'Too many attempts. Request a new code.'
-            : 'Invalid verification code';
-      return res.status(400).json({ success: false, message, reason: result.reason });
-    }
-
-    const customer = await userService.getCustomerById(req.user.id);
-    return res.json({
-      success: true,
-      message: 'Phone number verified successfully',
-      data: customer,
-    });
-  } catch (err) {
-    next(err);
-  }
-}
-
-async function verifyPhone(req, res, next) {
-  try {
-    // Link-based verification has been deprecated in favor of OTP codes.
-    const redirectUrl = process.env.FRONTEND_BASE_URL
-      ? `${process.env.FRONTEND_BASE_URL.replace(/\/$/, '')}/dashboard/verify-phone`
-      : null;
-
-    if (redirectUrl) return res.redirect(302, redirectUrl);
-    return res.status(410).json({
-      success: false,
-      message: 'Phone verification links are no longer supported. Request a verification code instead.',
-    });
-  } catch (err) {
-    next(err);
-  }
-}
-
 function buildVerifyEmailRedirect(status) {
   const base = (process.env.FRONTEND_BASE_URL || '').replace(/\/$/, '');
   if (!base) return null;
@@ -478,9 +385,6 @@ module.exports = {
   getProfile,
   updateProfile,
   getOrderHistory,
-  requestPhoneVerification,
-  verifyPhoneVerificationCode,
-  verifyPhone,
   verifyEmail,
   requestEmailVerification,
 };

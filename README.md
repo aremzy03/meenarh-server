@@ -922,7 +922,7 @@ Authorization: Bearer <token>
 
 #### Get Settings (Public)
 
-**Description:** Returns current company settings (name, tagline, phone, email, address, whatsapp). Used by the public website footer and contact sections. No authentication required.
+**Description:** Returns current company settings (name, tagline, phone, email, address, whatsapp). The `whatsapp` value is the public contact number for click-to-chat links (`wa.me`) on the website—not used for programmatic messaging. No authentication required.
 
 ```http
 GET /api/settings
