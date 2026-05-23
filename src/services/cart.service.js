@@ -516,6 +516,47 @@ async function clearDraftsInConnection(conn, userId, { singleItemIds = [], bulkE
   }
 }
 
+function pendingPaymentLink(paymentIntentId, paystackReference) {
+  return {
+    initialStatus: orderService.PENDING_PAYMENT_STATUS,
+    paymentIntentId,
+    paystackReference,
+  };
+}
+
+async function materializeCheckoutSnapshot(conn, userId, snapshot, { paymentIntentId, paystackReference }) {
+  const link = pendingPaymentLink(paymentIntentId, paystackReference);
+  const entries = [];
+
+  for (const item of snapshot.singleItems) {
+    const result = await orderService.createOrderFromSnapshot(userId, item, conn, link);
+    entries.push({
+      kind: 'single',
+      trackingNumber: result.trackingNumber,
+      price: Number(result.price || 0),
+      orderId: result.orderId,
+    });
+  }
+
+  for (const entry of snapshot.bulkEntries) {
+    const result = await bulkOrderService.createBulkOrderFromSnapshot(userId, entry, conn, link);
+    entries.push({
+      kind: 'bulk',
+      trackingNumber: result.trackingNumber,
+      price: Number(result.totalPrice || 0),
+      bulkItemCount: result.itemCount,
+    });
+  }
+
+  return {
+    entries,
+    hasSingle: snapshot.singleItems.length > 0,
+    hasBulk: snapshot.bulkEntries.length > 0,
+    totalDeliveries: snapshot.totalDeliveries,
+    totalPrice: entries.reduce((sum, entry) => sum + Number(entry.price || 0), 0),
+  };
+}
+
 async function fulfillCheckoutSnapshot(conn, userId, snapshot) {
   const entries = [];
 
@@ -577,6 +618,24 @@ async function checkout(userId) {
   }
 }
 
+async function materializeSingleItem(itemId, userId, { paymentIntentId, paystackReference }, conn) {
+  const singleItems = await getSingleCartItems(userId, conn);
+  const item = singleItems.find((cartItem) => Number(cartItem.id) === Number(itemId));
+
+  if (!item) {
+    const err = new Error('Cart item not found');
+    err.statusCode = 404;
+    throw err;
+  }
+
+  return orderService.createOrderFromSnapshot(
+    userId,
+    buildSingleSnapshot(item),
+    conn,
+    pendingPaymentLink(paymentIntentId, paystackReference)
+  );
+}
+
 // Checkout single item - convert one cart item to order
 async function checkoutSingleItem(itemId, userId) {
   const connection = await pool.getConnection();
@@ -618,6 +677,8 @@ module.exports = {
   getBulkCheckoutSnapshot,
   getCheckoutSnapshot,
   fulfillCheckoutSnapshot,
+  materializeCheckoutSnapshot,
+  materializeSingleItem,
   clearDraftsInConnection,
   updateCartItem,
   updateBulkCartEntry,

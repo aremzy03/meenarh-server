@@ -2,6 +2,9 @@ const pool = require('../config/db');
 const generateBulkTracking = require('../utils/generateBulkTracking');
 const regionPricing = require('./regionPricing.service');
 
+const PENDING_PAYMENT_STATUS = 'Pending Payment';
+const ORDER_CREATED_STATUS = 'Order Created';
+
 const ITEM_STATUSES = ['Pending', 'Picked Up', 'In Transit', 'Out for Delivery', 'Delivered'];
 
 // Strict linear progression; each status can only move to the next
@@ -92,14 +95,35 @@ async function resolveBulkOrderPayload(data, userId) {
  * @param {Array}  resolvedItems   Each entry: { ...item fields, sortIndex, rate: { price_ngn, eta_* } }
  * @returns {{ bulkOrderId, trackingNumber, totalPrice, itemCount, senderName }}
  */
-async function insertBulkOrderWithResolvedItems(conn, userId, senderName, senderPhone, defaultPickup, resolvedItems) {
+async function insertBulkOrderWithResolvedItems(
+  conn,
+  userId,
+  senderName,
+  senderPhone,
+  defaultPickup,
+  resolvedItems,
+  link = {}
+) {
+  const {
+    initialStatus = ORDER_CREATED_STATUS,
+    paymentIntentId = null,
+    paystackReference = null,
+    parentEventNote,
+  } = link;
+
   const totalPrice = resolvedItems.reduce((sum, item) => sum + Number(item.rate.price_ngn), 0);
+
+  const parentNote =
+    parentEventNote ||
+    (initialStatus === PENDING_PAYMENT_STATUS
+      ? 'Awaiting payment confirmation.'
+      : 'Bulk order has been placed successfully.');
 
   // Insert parent row with placeholder tracking
   const [bulkResult] = await conn.execute(
-    `INSERT INTO bulk_orders (user_id, tracking_number, sender_name, sender_phone, pickup_address, price, status)
-     VALUES (?, 'TEMP', ?, ?, ?, ?, 'Order Created')`,
-    [userId, senderName, senderPhone, defaultPickup, totalPrice]
+    `INSERT INTO bulk_orders (user_id, payment_intent_id, paystack_reference, tracking_number, sender_name, sender_phone, pickup_address, price, status)
+     VALUES (?, ?, ?, 'TEMP', ?, ?, ?, ?, ?)`,
+    [userId, paymentIntentId, paystackReference, senderName, senderPhone, defaultPickup, totalPrice, initialStatus]
   );
   const bulkOrderId = bulkResult.insertId;
   const trackingNumber = generateBulkTracking(bulkOrderId);
@@ -153,7 +177,7 @@ async function insertBulkOrderWithResolvedItems(conn, userId, senderName, sender
   // Parent event
   await conn.execute(
     'INSERT INTO bulk_order_events (bulk_order_id, status, note) VALUES (?, ?, ?)',
-    [bulkOrderId, 'Order Created', 'Bulk order has been placed successfully.']
+    [bulkOrderId, initialStatus, parentNote]
   );
 
   return {
@@ -174,7 +198,7 @@ async function insertBulkOrderWithResolvedItems(conn, userId, senderName, sender
  *   { senderName, senderPhone, defaultPickup, resolvedItems, amount_ngn }
  * @returns {{ bulkOrderId, trackingNumber, totalPrice, itemCount, senderName }}
  */
-async function createBulkOrderFromSnapshot(userId, snapshot, conn = null) {
+async function createBulkOrderFromSnapshot(userId, snapshot, conn = null, link = {}) {
   const { senderName, senderPhone, defaultPickup, resolvedItems, amount_ngn } = snapshot;
 
   // Sanity: total in snapshot must match what we stored (defence against corrupt metadata)
@@ -192,7 +216,13 @@ async function createBulkOrderFromSnapshot(userId, snapshot, conn = null) {
       await runner.beginTransaction();
     }
     const result = await insertBulkOrderWithResolvedItems(
-      runner, userId, senderName, senderPhone, defaultPickup, resolvedItems
+      runner,
+      userId,
+      senderName,
+      senderPhone,
+      defaultPickup,
+      resolvedItems,
+      link
     );
     if (ownsConnection) {
       await runner.commit();
@@ -351,7 +381,7 @@ async function getBulkOrdersByUserId(userId) {
  */
 async function getAllBulkOrders() {
   const [bulks] = await pool.execute(
-    `SELECT b.id, b.tracking_number, b.sender_name, b.sender_phone, b.pickup_address,
+    `SELECT b.id, b.tracking_number, b.paystack_reference, b.sender_name, b.sender_phone, b.pickup_address,
             b.price, b.status, b.created_at, b.updated_at,
             COUNT(i.id) AS item_count,
             c.name AS customer_name, c.email AS customer_email
@@ -369,7 +399,7 @@ async function getAllBulkOrders() {
  */
 async function getBulkOrderById(bulkOrderId) {
   const [bulks] = await pool.execute(
-    `SELECT b.id, b.tracking_number, b.sender_name, b.sender_phone, b.pickup_address,
+    `SELECT b.id, b.tracking_number, b.paystack_reference, b.sender_name, b.sender_phone, b.pickup_address,
             b.price, b.status, b.created_at, b.updated_at,
             c.name AS customer_name, c.email AS customer_email
      FROM bulk_orders b
@@ -423,9 +453,57 @@ async function getBulkOrderById(bulkOrderId) {
  * Update the status of a single bulk order item.
  * Enforces the linear progression: Pending → Picked Up → In Transit → Out for Delivery → Delivered.
  */
+async function bulkExistsForReference(paystackReference) {
+  const [rows] = await pool.execute(
+    'SELECT id FROM bulk_orders WHERE paystack_reference = ? LIMIT 1',
+    [paystackReference]
+  );
+  return rows.length > 0;
+}
+
+async function confirmBulkOrderForPayment(conn, paystackReference) {
+  const [rows] = await conn.execute(
+    `SELECT id FROM bulk_orders WHERE paystack_reference = ? AND status = ?`,
+    [paystackReference, PENDING_PAYMENT_STATUS]
+  );
+
+  for (const row of rows) {
+    await conn.execute('UPDATE bulk_orders SET status = ? WHERE id = ?', [ORDER_CREATED_STATUS, row.id]);
+    await conn.execute(
+      'INSERT INTO bulk_order_events (bulk_order_id, status, note) VALUES (?, ?, ?)',
+      [row.id, ORDER_CREATED_STATUS, 'Payment confirmed. Order is ready for processing.']
+    );
+  }
+
+  return rows.length;
+}
+
+async function getBulkOrderByPaystackReference(paystackReference) {
+  const [rows] = await pool.execute(
+    `SELECT id, tracking_number, price, status FROM bulk_orders WHERE paystack_reference = ? LIMIT 1`,
+    [paystackReference]
+  );
+  return rows[0] || null;
+}
+
 async function updateBulkItemStatus(bulkOrderId, itemId, newStatus, note) {
   if (!ITEM_STATUSES.includes(newStatus)) {
     const err = new Error(`Invalid status. Allowed: ${ITEM_STATUSES.join(', ')}`);
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const [[parent]] = await pool.execute(
+    'SELECT status FROM bulk_orders WHERE id = ?',
+    [bulkOrderId]
+  );
+  if (!parent) {
+    const err = new Error('Bulk order not found');
+    err.statusCode = 404;
+    throw err;
+  }
+  if (parent.status === PENDING_PAYMENT_STATUS) {
+    const err = new Error('Payment must be confirmed before updating item delivery status');
     err.statusCode = 400;
     throw err;
   }
@@ -479,9 +557,14 @@ async function updateBulkItemStatus(bulkOrderId, itemId, newStatus, note) {
 }
 
 module.exports = {
+  PENDING_PAYMENT_STATUS,
+  ORDER_CREATED_STATUS,
   resolveBulkOrderPayload,
   insertBulkOrderWithResolvedItems,
   createBulkOrderFromSnapshot,
+  bulkExistsForReference,
+  confirmBulkOrderForPayment,
+  getBulkOrderByPaystackReference,
   notifyBulkOrderPlaced,
   createBulkOrder,
   getBulkOrderByTracking,

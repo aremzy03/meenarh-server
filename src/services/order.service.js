@@ -3,6 +3,16 @@ const generateTracking = require('../utils/generateTracking');
 const { calculatePrice } = require('./pricing.service');
 const regionPricing = require('./regionPricing.service');
 
+const PENDING_PAYMENT_STATUS = 'Pending Payment';
+const ORDER_CREATED_STATUS = 'Order Created';
+const LOGISTICS_STATUSES = [
+  ORDER_CREATED_STATUS,
+  'Picked Up',
+  'In Transit',
+  'Out for Delivery',
+  'Delivered',
+];
+
 function regionRateError(message) {
   const err = new Error(message);
   err.statusCode = 400;
@@ -95,16 +105,32 @@ async function resolveOrderPayload(data, userId, conn = pool) {
   };
 }
 
-async function insertResolvedOrder(conn, userId, resolved) {
+async function insertResolvedOrder(conn, userId, resolved, link = {}) {
+  const {
+    initialStatus = ORDER_CREATED_STATUS,
+    paymentIntentId = null,
+    paystackReference = null,
+    eventNote,
+  } = link;
+
+  const status = initialStatus;
+  const note =
+    eventNote ||
+    (status === PENDING_PAYMENT_STATUS
+      ? 'Awaiting payment confirmation.'
+      : 'Order has been placed successfully.');
+
   const [result] = await conn.execute(
-    `INSERT INTO orders (user_id, tracking_number, sender_name, sender_phone, pickup_address,
+    `INSERT INTO orders (user_id, payment_intent_id, paystack_reference, tracking_number, sender_name, sender_phone, pickup_address,
       receiver_name, receiver_phone, delivery_address, package_description,
       item_value, quantity, is_fragile, zone_id, distance_km,
       pickup_region_id, delivery_region_id, delivery_region_area_id, eta_min_hours, eta_max_hours, eta_label,
       price, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Order Created')`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       userId,
+      paymentIntentId,
+      paystackReference,
       'TEMP',
       resolved.senderName,
       resolved.senderPhone,
@@ -125,6 +151,7 @@ async function insertResolvedOrder(conn, userId, resolved) {
       resolved.etaMaxHours,
       resolved.etaLabel,
       resolved.price,
+      status,
     ]
   );
 
@@ -134,7 +161,7 @@ async function insertResolvedOrder(conn, userId, resolved) {
   await conn.execute('UPDATE orders SET tracking_number = ? WHERE id = ?', [trackingNumber, orderId]);
   await conn.execute(
     'INSERT INTO order_events (order_id, status, note) VALUES (?, ?, ?)',
-    [orderId, 'Order Created', 'Order has been placed successfully.']
+    [orderId, status, note]
   );
 
   return {
@@ -163,7 +190,7 @@ async function createOrder(data, userId) {
   }
 }
 
-async function createOrderFromSnapshot(userId, snapshot, conn = null) {
+async function createOrderFromSnapshot(userId, snapshot, conn = null, link = {}) {
   const runner = conn || await pool.getConnection();
   const ownsConnection = !conn;
   try {
@@ -191,7 +218,7 @@ async function createOrderFromSnapshot(userId, snapshot, conn = null) {
       etaMaxHours: snapshot.eta_max_hours ?? null,
       etaLabel: snapshot.eta_label || null,
       price: Number(snapshot.price),
-    });
+    }, link);
 
     if (ownsConnection) {
       await runner.commit();
@@ -208,6 +235,31 @@ async function createOrderFromSnapshot(userId, snapshot, conn = null) {
       runner.release();
     }
   }
+}
+
+async function ordersExistForReference(paystackReference) {
+  const [rows] = await pool.execute(
+    'SELECT id FROM orders WHERE paystack_reference = ? LIMIT 1',
+    [paystackReference]
+  );
+  return rows.length > 0;
+}
+
+async function confirmOrdersForPayment(conn, paystackReference) {
+  const [rows] = await conn.execute(
+    `SELECT id FROM orders WHERE paystack_reference = ? AND status = ?`,
+    [paystackReference, PENDING_PAYMENT_STATUS]
+  );
+
+  for (const row of rows) {
+    await conn.execute('UPDATE orders SET status = ? WHERE id = ?', [ORDER_CREATED_STATUS, row.id]);
+    await conn.execute(
+      'INSERT INTO order_events (order_id, status, note) VALUES (?, ?, ?)',
+      [row.id, ORDER_CREATED_STATUS, 'Payment confirmed. Order is ready for processing.']
+    );
+  }
+
+  return rows.length;
 }
 
 async function getOrderByTracking(trackingNumber) {
@@ -241,7 +293,7 @@ async function getOrderByTracking(trackingNumber) {
 
 async function getAllOrders() {
   const [orders] = await pool.execute(
-    `SELECT id, tracking_number, sender_name, receiver_name, pickup_address, delivery_address,
+    `SELECT id, tracking_number, paystack_reference, sender_name, receiver_name, pickup_address, delivery_address,
             package_description, item_value, quantity, is_fragile,
             pickup_region_id, delivery_region_id, delivery_region_area_id, eta_min_hours, eta_max_hours, eta_label,
             price, status, created_at, updated_at
@@ -284,10 +336,15 @@ async function getOrdersByUserId(userId) {
 }
 
 module.exports = {
+  PENDING_PAYMENT_STATUS,
+  ORDER_CREATED_STATUS,
+  LOGISTICS_STATUSES,
   createOrder,
   createOrderFromSnapshot,
   resolveOrderPayload,
   insertResolvedOrder,
+  ordersExistForReference,
+  confirmOrdersForPayment,
   getOrderByTracking,
   getAllOrders,
   updateOrderStatus,

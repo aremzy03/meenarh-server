@@ -37,7 +37,7 @@ async function handlePaystackWebhook(req, res) {
     const reference = event.data?.reference;
     if (reference) {
       try {
-        await paymentIntentService.fulfillIntentByReference(reference);
+        await paymentIntentService.confirmPaymentForReference(reference);
       } catch (err) {
         // eslint-disable-next-line no-console
         console.error('Paystack webhook fulfill error:', err);

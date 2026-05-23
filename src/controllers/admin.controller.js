@@ -96,17 +96,34 @@ async function updateOrderStatus(req, res, next) {
     const { id } = req.params;
     const { status, note } = req.body;
 
+    const [orders] = await pool.execute('SELECT id, status FROM orders WHERE id = ?', [id]);
+    if (orders.length === 0) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+
+    const currentStatus = orders[0].status;
+
+    if (currentStatus === orderService.PENDING_PAYMENT_STATUS) {
+      if (status && status !== orderService.PENDING_PAYMENT_STATUS) {
+        return res.status(400).json({
+          success: false,
+          message: 'Payment must be confirmed before updating delivery status',
+        });
+      }
+
+      await orderService.updateOrderStatus(id, orderService.PENDING_PAYMENT_STATUS, note);
+
+      return res.json({
+        success: true,
+        message: note ? 'Note added to pending payment order' : 'Order unchanged',
+      });
+    }
+
     if (!status || !VALID_STATUSES.includes(status)) {
       return res.status(400).json({
         success: false,
         message: `Invalid status. Must be one of: ${VALID_STATUSES.join(', ')}`,
       });
-    }
-
-    // Verify order exists
-    const [orders] = await pool.execute('SELECT id FROM orders WHERE id = ?', [id]);
-    if (orders.length === 0) {
-      return res.status(404).json({ success: false, message: 'Order not found' });
     }
 
     await orderService.updateOrderStatus(id, status, note);

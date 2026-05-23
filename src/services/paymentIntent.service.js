@@ -4,6 +4,7 @@ const cartService = require('./cart.service');
 const promoService = require('./promo.service');
 const paystack = require('./paystack.service');
 const bulkOrderService = require('./bulkOrder.service');
+const orderService = require('./order.service');
 const { createBulkOrderSchema } = require('../validators/bulkOrder.validator');
 
 const MAX_PAID_WAIT_MS = 20000;
@@ -442,26 +443,427 @@ async function getIntentRow(reference) {
   return rows[0] || null;
 }
 
-async function fulfillMixedCartFromSnapshot(intent, meta) {
+function paymentLink(intent, reference) {
+  return {
+    paymentIntentId: intent.id,
+    paystackReference: reference,
+  };
+}
+
+async function markOrdersMaterialized(reference, checkoutPayload) {
+  const row = await getIntentRow(reference);
+  const meta = row ? parseMetadata(row) : {};
+  meta.orders_materialized = true;
+  meta.checkoutResponse = checkoutPayload;
+  await pool.execute(
+    `UPDATE payment_intents SET metadata = ?, updated_at = NOW() WHERE reference = ?`,
+    [JSON.stringify(meta), reference]
+  );
+}
+
+async function markIntentFailed(reference) {
+  await pool.execute(
+    `UPDATE payment_intents SET status = 'failed', updated_at = NOW() WHERE reference = ? AND status IN ('pending', 'paid')`,
+    [reference]
+  );
+}
+
+async function loadCheckoutPayloadFromReference(reference, intent) {
+  const [orderRows] = await pool.execute(
+    `SELECT id, tracking_number, price FROM orders WHERE paystack_reference = ? ORDER BY id ASC`,
+    [reference]
+  );
+  const [bulkRows] = await pool.execute(
+    `SELECT id, tracking_number, price FROM bulk_orders WHERE paystack_reference = ? ORDER BY id ASC`,
+    [reference]
+  );
+
+  const entries = [];
+
+  for (const row of orderRows) {
+    entries.push({
+      kind: 'single',
+      trackingNumber: row.tracking_number,
+      price: Number(row.price || 0),
+      orderId: row.id,
+    });
+  }
+
+  for (const row of bulkRows) {
+    const [[countRow]] = await pool.execute(
+      'SELECT COUNT(*) AS item_count FROM bulk_order_items WHERE bulk_order_id = ?',
+      [row.id]
+    );
+    entries.push({
+      kind: 'bulk',
+      trackingNumber: row.tracking_number,
+      price: Number(row.price || 0),
+      bulkItemCount: Number(countRow.item_count || 0),
+    });
+  }
+
+  if (intent.scope === 'bulk_order' && entries.length === 1 && entries[0].kind === 'bulk') {
+    return formatBulkCheckoutPayload({
+      trackingNumber: entries[0].trackingNumber,
+      totalPrice: entries[0].price,
+      itemCount: entries[0].bulkItemCount,
+    });
+  }
+
+  if (intent.scope === 'single_item' && entries.length === 1 && entries[0].kind === 'single') {
+    return formatCheckoutPayload(
+      [{ kind: 'single', trackingNumber: entries[0].trackingNumber, price: entries[0].price }],
+      { checkout_kind: 'cart' }
+    );
+  }
+
+  const hasSingle = entries.some((e) => e.kind === 'single');
+  const hasBulk = entries.some((e) => e.kind === 'bulk');
+  return formatMixedCheckoutPayload({
+    entries,
+    hasSingle,
+    hasBulk,
+    totalDeliveries: entries.reduce(
+      (sum, e) => sum + (e.kind === 'bulk' ? Number(e.bulkItemCount || 0) : 1),
+      0
+    ),
+  });
+}
+
+async function ordersAlreadyExist(reference) {
+  if (await orderService.ordersExistForReference(reference)) return true;
+  return bulkOrderService.bulkExistsForReference(reference);
+}
+
+async function clearCartAfterConfirm(intent, meta) {
+  const conn = await pool.getConnection();
+  try {
+    if (intent.scope === 'single_item' && intent.cart_item_id != null) {
+      await cartService.clearDraftsInConnection(conn, intent.user_id, {
+        singleItemIds: [Number(intent.cart_item_id)],
+      });
+      return;
+    }
+
+    if (intent.scope === 'bulk_order' && meta.cart_bulk_entry_id != null) {
+      await cartService.clearDraftsInConnection(conn, intent.user_id, {
+        bulkEntryIds: [Number(meta.cart_bulk_entry_id)],
+      });
+      return;
+    }
+
+    if (meta.checkout_snapshot_version === 1) {
+      await cartService.clearDraftsInConnection(conn, intent.user_id, {
+        singleItemIds: (meta.single_items || []).map((item) => Number(item.cart_item_id)),
+        bulkEntryIds: (meta.bulk_entries || []).map((entry) => Number(entry.cart_bulk_entry_id)),
+      });
+      return;
+    }
+
+    await cartService.clearCart(intent.user_id);
+  } finally {
+    conn.release();
+  }
+}
+
+async function recordPromoIfNeeded(intent, meta, reference) {
+  if (!meta.promo_code_id || meta.discount == null) return;
+
+  let orderId = null;
+  if (intent.scope === 'single_item') {
+    const [rows] = await pool.execute(
+      'SELECT id FROM orders WHERE paystack_reference = ? LIMIT 1',
+      [reference]
+    );
+    orderId = rows[0]?.id ?? null;
+  }
+
+  await promoService.recordUsage({
+    promoCodeId: meta.promo_code_id,
+    customerId: intent.user_id,
+    orderId,
+    paymentIntentId: intent.id,
+    discountApplied: meta.discount,
+  });
+}
+
+async function notifyAfterConfirm(intent, reference) {
+  if (intent.scope === 'bulk_order') {
+    const bulk = await bulkOrderService.getBulkOrderByPaystackReference(reference);
+    if (bulk) {
+      bulkOrderService.notifyBulkOrderPlaced(intent.user_id, {
+        trackingNumber: bulk.tracking_number,
+        totalPrice: bulk.price,
+      });
+    }
+    return;
+  }
+
+  const { sendOrderConfirmationEmail } = require('./email.service');
+  const [customers] = await pool.execute('SELECT email, name FROM customers WHERE id = ?', [intent.user_id]);
+  const customer = customers[0];
+  if (!customer?.email) return;
+
+  const [orderRows] = await pool.execute(
+    `SELECT id, tracking_number, price FROM orders WHERE paystack_reference = ?`,
+    [reference]
+  );
+
+  for (const row of orderRows) {
+    sendOrderConfirmationEmail({
+      to: customer.email,
+      name: customer.name || 'Customer',
+      trackingNumber: row.tracking_number,
+      price: row.price,
+      orderId: row.id,
+    }).catch(() => {});
+  }
+}
+
+async function materializeOrdersForReference(reference, opts = {}) {
+  const { userId } = opts;
+  const intent = await getIntentRow(reference);
+  if (!intent) {
+    const err = new Error('Payment intent not found');
+    err.statusCode = 404;
+    throw err;
+  }
+  if (userId != null && Number(intent.user_id) !== Number(userId)) {
+    const err = new Error('Forbidden');
+    err.statusCode = 403;
+    throw err;
+  }
+
+  const meta = parseMetadata(intent);
+  if (meta.orders_materialized && meta.checkoutResponse) {
+    return meta.checkoutResponse;
+  }
+
+  if (await ordersAlreadyExist(reference)) {
+    const checkoutPayload = await loadCheckoutPayloadFromReference(reference, intent);
+    await markOrdersMaterialized(reference, checkoutPayload);
+    return checkoutPayload;
+  }
+
+  const link = paymentLink(intent, reference);
+  let checkoutPayload;
+
+  if (intent.scope === 'bulk_order') {
+    const snapshot = {
+      senderName: meta.sender_name,
+      senderPhone: meta.sender_phone,
+      defaultPickup: meta.pickup_address,
+      resolvedItems: meta.resolved_items,
+      amount_ngn: meta.amount_ngn,
+    };
+
+    if (!snapshot.resolvedItems || meta.bulk_snapshot_version !== 1) {
+      const err = new Error('Bulk order snapshot is invalid or missing');
+      err.statusCode = 500;
+      throw err;
+    }
+
+    const conn = await pool.getConnection();
+    let result;
+    try {
+      await conn.beginTransaction();
+      result = await bulkOrderService.createBulkOrderFromSnapshot(intent.user_id, snapshot, conn, link);
+      await conn.commit();
+    } catch (error) {
+      await conn.rollback();
+      throw error;
+    } finally {
+      conn.release();
+    }
+
+    checkoutPayload = formatBulkCheckoutPayload(result);
+  } else if (intent.scope === 'single_item') {
+    const conn = await pool.getConnection();
+    let result;
+    try {
+      await conn.beginTransaction();
+      result = await cartService.materializeSingleItem(
+        intent.cart_item_id,
+        intent.user_id,
+        link,
+        conn
+      );
+      await conn.commit();
+    } catch (error) {
+      await conn.rollback();
+      throw error;
+    } finally {
+      conn.release();
+    }
+
+    checkoutPayload = formatCheckoutPayload(
+      [{ kind: 'single', trackingNumber: result.trackingNumber, price: result.price }],
+      { checkout_kind: 'cart' }
+    );
+  } else if (meta.checkout_snapshot_version === 1) {
+    const conn = await pool.getConnection();
+    let mixedResult;
+    try {
+      await conn.beginTransaction();
+      mixedResult = await cartService.materializeCheckoutSnapshot(conn, intent.user_id, {
+        singleItems: meta.single_items || [],
+        bulkEntries: meta.bulk_entries || [],
+        totalDeliveries:
+          meta.total_delivery_count ??
+          (meta.single_items || []).length +
+            (meta.bulk_entries || []).reduce(
+              (sum, entry) => sum + (entry.resolvedItems || []).length,
+              0
+            ),
+      }, link);
+      await conn.commit();
+    } catch (error) {
+      await conn.rollback();
+      throw error;
+    } finally {
+      conn.release();
+    }
+
+    checkoutPayload = formatMixedCheckoutPayload(mixedResult);
+  } else {
+    const snapshot = await cartService.getCheckoutSnapshot(intent.user_id);
+    const conn = await pool.getConnection();
+    let mixedResult;
+    try {
+      await conn.beginTransaction();
+      mixedResult = await cartService.materializeCheckoutSnapshot(conn, intent.user_id, snapshot, link);
+      await conn.commit();
+    } catch (error) {
+      await conn.rollback();
+      throw error;
+    } finally {
+      conn.release();
+    }
+
+    checkoutPayload = formatMixedCheckoutPayload(mixedResult);
+  }
+
+  await markOrdersMaterialized(reference, checkoutPayload);
+  return checkoutPayload;
+}
+
+async function confirmPaymentForReference(reference, opts = {}) {
+  const { userId } = opts;
+  const intent = await getIntentRow(reference);
+  if (!intent) {
+    const err = new Error('Payment intent not found');
+    err.statusCode = 404;
+    throw err;
+  }
+  if (userId != null && Number(intent.user_id) !== Number(userId)) {
+    const err = new Error('Forbidden');
+    err.statusCode = 403;
+    throw err;
+  }
+
+  const meta = parseMetadata(intent);
+
+  if (intent.status === 'fulfilled') {
+    return {
+      payment_state: 'confirmed',
+      data: meta.checkoutResponse || (await loadCheckoutPayloadFromReference(reference, intent)),
+    };
+  }
+
+  const ps = await paystack.verifyTransaction(reference);
+  const data = ps?.data;
+  const psStatus = data?.status;
+
+  if (!data) {
+    const err = new Error('Unable to verify payment with Paystack');
+    err.statusCode = 502;
+    throw err;
+  }
+
+  if (psStatus === 'failed' || psStatus === 'abandoned') {
+    await markIntentFailed(reference);
+    const err = new Error('Paystack reports this payment was not successful');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const checkoutPayload = await materializeOrdersForReference(reference, opts);
+
+  if (psStatus === 'pending') {
+    return {
+      payment_state: 'pending_payment',
+      data: {
+        reference,
+        message: 'Payment is still being processed. Your order is reserved.',
+        ...checkoutPayload,
+      },
+    };
+  }
+
+  if (psStatus !== 'success') {
+    const err = new Error(`Unexpected Paystack payment status: ${psStatus}`);
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if (Number(data.amount) !== Number(intent.amount_kobo)) {
+    const err = new Error('Payment amount does not match order total');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const acquired = await acquirePaidSlot(reference);
+  if (!acquired) {
+    const latest = await getIntentRow(reference);
+    if (latest.status === 'fulfilled') {
+      const latestMeta = parseMetadata(latest);
+      return {
+        payment_state: 'confirmed',
+        data: latestMeta.checkoutResponse || checkoutPayload,
+      };
+    }
+    if (latest.status === 'paid') {
+      const fulfilled = await waitForFulfilledCheckout(reference);
+      return { payment_state: 'confirmed', data: fulfilled };
+    }
+    const err = new Error('Unable to process payment for this reference');
+    err.statusCode = 409;
+    throw err;
+  }
+
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
-    const result = await cartService.fulfillCheckoutSnapshot(conn, intent.user_id, {
-      singleItems: meta.single_items || [],
-      bulkEntries: meta.bulk_entries || [],
-      totalDeliveries:
-        meta.total_delivery_count ??
-        ((meta.single_items || []).length +
-          (meta.bulk_entries || []).reduce((sum, entry) => sum + (entry.resolvedItems || []).length, 0)),
-    });
+    await orderService.confirmOrdersForPayment(conn, reference);
+    await bulkOrderService.confirmBulkOrderForPayment(conn, reference);
     await conn.commit();
-    return result;
   } catch (error) {
     await conn.rollback();
+    await resetToPendingIfPaid(reference);
     throw error;
   } finally {
     conn.release();
   }
+
+  try {
+    await markFulfilled(reference, checkoutPayload);
+    await clearCartAfterConfirm(intent, meta);
+    await recordPromoIfNeeded(intent, meta, reference);
+    await notifyAfterConfirm(intent, reference);
+  } catch (error) {
+    // Orders are confirmed; do not roll back paid slot.
+    // eslint-disable-next-line no-console
+    console.error('Post-confirm side effects failed:', error);
+  }
+
+  return { payment_state: 'confirmed', data: checkoutPayload };
+}
+
+/**
+ * Verify path: materialize orders, then confirm if Paystack reports success.
+ */
+async function processPaystackReference(reference, opts = {}) {
+  return confirmPaymentForReference(reference, opts);
 }
 
 async function waitForFulfilledCheckout(reference) {
@@ -485,191 +887,23 @@ async function waitForFulfilledCheckout(reference) {
 }
 
 /**
- * Verify with Paystack, fulfill once, idempotent by reference.
- * Handles full_cart, single_item, and bulk_order scopes.
- *
- * @param {string} reference
- * @param {{ userId?: number }} [opts]  If userId set (customer verify path), must match intent.
+ * Legacy entry: confirm payment and return checkout payload only (webhook).
+ * Materializes on verify inside confirmPaymentForReference when needed.
  */
 async function fulfillIntentByReference(reference, opts = {}) {
-  const { userId } = opts;
-  const row = await getIntentRow(reference);
-  if (!row) {
-    const err = new Error('Payment intent not found');
-    err.statusCode = 404;
-    throw err;
+  const result = await confirmPaymentForReference(reference, opts);
+  if (result.payment_state === 'pending_payment') {
+    return result.data;
   }
-  if (userId != null && Number(row.user_id) !== Number(userId)) {
-    const err = new Error('Forbidden');
-    err.statusCode = 403;
-    throw err;
-  }
-
-  if (row.status === 'fulfilled') {
-    const meta = parseMetadata(row);
-    if (meta.checkoutResponse) return meta.checkoutResponse;
-  }
-
-  const ps = await paystack.verifyTransaction(reference);
-  const data = ps?.data;
-  if (!data || data.status !== 'success') {
-    const err = new Error('Paystack reports this payment was not successful');
-    err.statusCode = 400;
-    throw err;
-  }
-  if (Number(data.amount) !== Number(row.amount_kobo)) {
-    const err = new Error('Payment amount does not match order total');
-    err.statusCode = 400;
-    throw err;
-  }
-
-  const acquired = await acquirePaidSlot(reference);
-  if (!acquired) {
-    const latest = await getIntentRow(reference);
-    if (latest.status === 'fulfilled') {
-      const meta = parseMetadata(latest);
-      if (meta.checkoutResponse) return meta.checkoutResponse;
-    }
-    if (latest.status === 'paid') {
-      return waitForFulfilledCheckout(reference);
-    }
-    const err = new Error('Unable to process payment for this reference');
-    err.statusCode = 409;
-    throw err;
-  }
-
-  const intent = await getIntentRow(reference);
-  const meta = parseMetadata(intent);
-
-  let entityCreated = false;
-  try {
-    // ─── Bulk order branch ────────────────────────────────────────────────────
-    if (intent.scope === 'bulk_order') {
-      const snapshot = {
-        senderName:    meta.sender_name,
-        senderPhone:   meta.sender_phone,
-        defaultPickup: meta.pickup_address,
-        resolvedItems: meta.resolved_items,
-        amount_ngn:    meta.amount_ngn,
-      };
-
-      if (!snapshot.resolvedItems || meta.bulk_snapshot_version !== 1) {
-        const err = new Error('Bulk order snapshot is invalid or missing');
-        err.statusCode = 500;
-        throw err;
-      }
-
-      const conn = await pool.getConnection();
-      let result;
-      try {
-        await conn.beginTransaction();
-        result = await bulkOrderService.createBulkOrderFromSnapshot(intent.user_id, snapshot, conn);
-        if (meta.cart_bulk_entry_id != null) {
-          await cartService.clearDraftsInConnection(conn, intent.user_id, {
-            bulkEntryIds: [Number(meta.cart_bulk_entry_id)],
-          });
-        }
-        await conn.commit();
-      } catch (error) {
-        await conn.rollback();
-        throw error;
-      } finally {
-        conn.release();
-      }
-
-      entityCreated = true;
-
-      const checkoutPayload = formatBulkCheckoutPayload(result);
-      await markFulfilled(reference, checkoutPayload);
-
-      if (meta.promo_code_id && meta.discount != null) {
-        await promoService.recordUsage({
-          promoCodeId: meta.promo_code_id,
-          customerId: intent.user_id,
-          paymentIntentId: intent.id,
-          discountApplied: meta.discount,
-        });
-      }
-
-      // Best-effort notifications — do not await so fulfillment isn't blocked
-      bulkOrderService.notifyBulkOrderPlaced(intent.user_id, {
-        trackingNumber: result.trackingNumber,
-        totalPrice: result.totalPrice,
-      });
-
-      return checkoutPayload;
-    }
-
-    // ─── Cart / single_item branch ────────────────────────────────────────────
-    if (intent.scope === 'single_item') {
-      const rawOrder = await cartService.checkoutSingleItem(intent.cart_item_id, intent.user_id);
-      entityCreated = true;
-
-      const checkoutPayload = formatCheckoutPayload(
-        [{ kind: 'single', trackingNumber: rawOrder.trackingNumber, price: rawOrder.price }],
-        { checkout_kind: 'cart' }
-      );
-      await markFulfilled(reference, checkoutPayload);
-
-      if (meta.promo_code_id && meta.discount != null) {
-        await promoService.recordUsage({
-          promoCodeId: meta.promo_code_id,
-          customerId: intent.user_id,
-          orderId: rawOrder.orderId,
-          paymentIntentId: intent.id,
-          discountApplied: meta.discount,
-        });
-      }
-
-      return checkoutPayload;
-    }
-
-    if (meta.checkout_snapshot_version === 1) {
-      const mixedResult = await fulfillMixedCartFromSnapshot(intent, meta);
-      entityCreated = true;
-
-      const checkoutPayload = formatMixedCheckoutPayload(mixedResult);
-      await markFulfilled(reference, checkoutPayload);
-
-      if (meta.promo_code_id && meta.discount != null) {
-        await promoService.recordUsage({
-          promoCodeId: meta.promo_code_id,
-          customerId: intent.user_id,
-          paymentIntentId: intent.id,
-          discountApplied: meta.discount,
-        });
-      }
-
-      return checkoutPayload;
-    }
-
-    const rawOrders = await cartService.checkout(intent.user_id);
-    entityCreated = true;
-
-    const checkoutPayload = formatCheckoutPayload(rawOrders, { checkout_kind: 'cart' });
-    await markFulfilled(reference, checkoutPayload);
-
-    if (meta.promo_code_id && meta.discount != null) {
-      await promoService.recordUsage({
-        promoCodeId: meta.promo_code_id,
-        customerId: intent.user_id,
-        paymentIntentId: intent.id,
-        discountApplied: meta.discount,
-      });
-    }
-
-    return checkoutPayload;
-  } catch (e) {
-    if (!entityCreated) {
-      await resetToPendingIfPaid(reference);
-    }
-    throw e;
-  }
+  return result.data;
 }
 
 module.exports = {
   initializePaystackForUser,
   fulfillIntentByReference,
+  materializeOrdersForReference,
+  confirmPaymentForReference,
+  processPaystackReference,
   computePayable,
   computePayableBulk,
 };
