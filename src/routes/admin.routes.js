@@ -24,6 +24,7 @@ router.use(authLimiter);
 router.get('/me', adminController.me);
 router.post('/logout', adminController.logout);
 router.get('/orders', adminController.getOrders);
+router.get('/orders/:id', adminController.getOrderById);
 router.patch('/orders/:id/status', adminController.updateOrderStatus);
 
 // Bulk order admin routes
@@ -34,6 +35,7 @@ router.patch('/bulk-orders/:bulkId/items/:itemId/status', bulkOrderController.up
 router.get('/customers', adminController.listCustomers);
 router.get('/customers/:id', adminController.getCustomerById);
 router.get('/customers/:id/orders', adminController.getCustomerOrders);
+router.get('/customers/:id/bulk-orders', adminController.getCustomerBulkOrders);
 router.get('/customers/:id/cart', adminController.getCustomerCart);
 router.post('/users', validateCreateAdminUser, adminController.createAdminUser);
 

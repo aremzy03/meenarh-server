@@ -16,6 +16,51 @@ const ALLOWED_NEXT = {
   'Delivered':         null,
 };
 
+const BULK_ITEM_SELECT = `
+  i.id, i.bulk_order_id, i.sort_index, i.pickup_region_id, i.pickup_address,
+  i.delivery_region_id, i.delivery_region_area_id, i.delivery_address,
+  i.receiver_name, i.receiver_phone,
+  i.package_description, i.item_value, i.quantity, i.is_fragile,
+  i.price_ngn, i.eta_min_hours, i.eta_max_hours, i.eta_label,
+  i.status, i.created_at, i.updated_at,
+  pr.name AS pickup_region_name,
+  dr.name AS delivery_region_name,
+  dra.name AS delivery_region_area_name`;
+
+const BULK_ITEM_JOINS = `
+  LEFT JOIN pickup_regions pr ON pr.id = i.pickup_region_id
+  LEFT JOIN delivery_regions dr ON dr.id = i.delivery_region_id
+  LEFT JOIN delivery_region_areas dra ON dra.id = i.delivery_region_area_id`;
+
+async function fetchBulkItemsWithEvents(bulkOrderId) {
+  const [items] = await pool.execute(
+    `SELECT ${BULK_ITEM_SELECT}
+     FROM bulk_order_items i
+     ${BULK_ITEM_JOINS}
+     WHERE i.bulk_order_id = ?
+     ORDER BY i.sort_index ASC`,
+    [bulkOrderId]
+  );
+
+  return Promise.all(
+    items.map(async (item) => {
+      const [evts] = await pool.execute(
+        'SELECT status, note, created_at FROM bulk_order_item_events WHERE bulk_order_item_id = ? ORDER BY created_at ASC',
+        [item.id]
+      );
+      return {
+        ...item,
+        events: evts.map((e, idx) => ({
+          id: idx + 1,
+          status: e.status,
+          description: e.note || '',
+          created_at: e.created_at,
+        })),
+      };
+    })
+  );
+}
+
 function regionRateError(message, path) {
   const err = new Error(message);
   err.statusCode = 400;
@@ -319,36 +364,13 @@ async function getBulkOrderByTracking(trackingNumber) {
   if (bulks.length === 0) return null;
 
   const bulk = bulks[0];
-  const [items] = await pool.execute(
-    `SELECT i.id, i.sort_index, i.pickup_region_id, i.pickup_address,
-            i.delivery_region_id, i.delivery_region_area_id, i.delivery_address,
-            i.receiver_name, i.receiver_phone,
-            i.package_description, i.item_value, i.quantity, i.is_fragile,
-            i.price_ngn, i.eta_min_hours, i.eta_max_hours, i.eta_label,
-            i.status, i.created_at, i.updated_at
-     FROM bulk_order_items i
-     WHERE i.bulk_order_id = ?
-     ORDER BY i.sort_index ASC`,
-    [bulk.id]
-  );
 
   const [parentEvents] = await pool.execute(
     'SELECT status, note, created_at FROM bulk_order_events WHERE bulk_order_id = ? ORDER BY created_at ASC',
     [bulk.id]
   );
 
-  const itemsWithEvents = await Promise.all(
-    items.map(async (item) => {
-      const [evts] = await pool.execute(
-        'SELECT status, note, created_at FROM bulk_order_item_events WHERE bulk_order_item_id = ? ORDER BY created_at ASC',
-        [item.id]
-      );
-      return {
-        ...item,
-        events: evts.map((e, idx) => ({ id: idx + 1, status: e.status, description: e.note || '', created_at: e.created_at })),
-      };
-    })
-  );
+  const itemsWithEvents = await fetchBulkItemsWithEvents(bulk.id);
 
   return {
     ...bulk,
@@ -410,36 +432,13 @@ async function getBulkOrderById(bulkOrderId) {
   if (bulks.length === 0) return null;
 
   const bulk = bulks[0];
-  const [items] = await pool.execute(
-    `SELECT i.id, i.sort_index, i.pickup_region_id, i.pickup_address,
-            i.delivery_region_id, i.delivery_region_area_id, i.delivery_address,
-            i.receiver_name, i.receiver_phone,
-            i.package_description, i.item_value, i.quantity, i.is_fragile,
-            i.price_ngn, i.eta_min_hours, i.eta_max_hours, i.eta_label,
-            i.status, i.created_at, i.updated_at
-     FROM bulk_order_items i
-     WHERE i.bulk_order_id = ?
-     ORDER BY i.sort_index ASC`,
-    [bulk.id]
-  );
 
   const [parentEvents] = await pool.execute(
     'SELECT status, note, created_at FROM bulk_order_events WHERE bulk_order_id = ? ORDER BY created_at ASC',
     [bulk.id]
   );
 
-  const itemsWithEvents = await Promise.all(
-    items.map(async (item) => {
-      const [evts] = await pool.execute(
-        'SELECT status, note, created_at FROM bulk_order_item_events WHERE bulk_order_item_id = ? ORDER BY created_at ASC',
-        [item.id]
-      );
-      return {
-        ...item,
-        events: evts.map((e, idx) => ({ id: idx + 1, status: e.status, description: e.note || '', created_at: e.created_at })),
-      };
-    })
-  );
+  const itemsWithEvents = await fetchBulkItemsWithEvents(bulk.id);
 
   return {
     ...bulk,

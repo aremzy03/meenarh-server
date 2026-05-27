@@ -2,6 +2,7 @@ const bcrypt = require('bcrypt');
 const pool = require('../config/db');
 const { signToken, sessionCookieOptions } = require('../utils/jwt');
 const orderService = require('../services/order.service');
+const bulkOrderService = require('../services/bulkOrder.service');
 const { sendOrderStatusUpdateEmail } = require('../services/email.service');
 
 const VALID_STATUSES = ['Order Created', 'Picked Up', 'In Transit', 'Out for Delivery', 'Delivered'];
@@ -86,6 +87,19 @@ async function getOrders(_req, res, next) {
   try {
     const orders = await orderService.getAllOrders();
     res.json({ success: true, data: orders });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function getOrderById(req, res, next) {
+  try {
+    const { id } = req.params;
+    const order = await orderService.getOrderById(id);
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+    res.json({ success: true, data: order });
   } catch (err) {
     next(err);
   }
@@ -243,13 +257,21 @@ async function getCustomerById(req, res, next) {
     }
 
     const [[orderStats]] = await pool.execute(
-      'SELECT COUNT(*) as order_count, COALESCE(SUM(price), 0) as total_spent FROM orders WHERE user_id = ?',
-      [id]
+      `SELECT
+         (SELECT COUNT(*) FROM orders WHERE user_id = ?) +
+         (SELECT COUNT(*) FROM bulk_orders WHERE user_id = ?) AS order_count,
+         COALESCE((SELECT SUM(price) FROM orders WHERE user_id = ?), 0) +
+         COALESCE((SELECT SUM(price) FROM bulk_orders WHERE user_id = ?), 0) AS total_spent`,
+      [id, id, id, id]
     );
 
     res.json({
       success: true,
-      data: { ...customers[0], order_count: orderStats.order_count, total_spent: parseFloat(orderStats.total_spent) },
+      data: {
+        ...customers[0],
+        order_count: Number(orderStats.order_count) || 0,
+        total_spent: parseFloat(orderStats.total_spent) || 0,
+      },
     });
   } catch (err) {
     next(err);
@@ -284,7 +306,17 @@ async function getCustomerCart(req, res, next) {
   }
 }
 
+async function getCustomerBulkOrders(req, res, next) {
+  try {
+    const { id } = req.params;
+    const bulks = await bulkOrderService.getBulkOrdersByUserId(id);
+    res.json({ success: true, data: bulks });
+  } catch (err) {
+    next(err);
+  }
+}
+
 module.exports = {
-  login, logout, me, getOrders, updateOrderStatus, listCustomers, createAdminUser,
-  getCustomerById, getCustomerOrders, getCustomerCart,
+  login, logout, me, getOrders, getOrderById, updateOrderStatus, listCustomers, createAdminUser,
+  getCustomerById, getCustomerOrders, getCustomerBulkOrders, getCustomerCart,
 };

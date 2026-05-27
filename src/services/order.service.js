@@ -262,13 +262,52 @@ async function confirmOrdersForPayment(conn, paystackReference) {
   return rows.length;
 }
 
+const ORDER_REGION_JOINS = `
+  LEFT JOIN pickup_regions pr ON pr.id = o.pickup_region_id
+  LEFT JOIN delivery_regions dr ON dr.id = o.delivery_region_id
+  LEFT JOIN delivery_region_areas dra ON dra.id = o.delivery_region_area_id`;
+
+const ORDER_DETAIL_COLUMNS = `
+  o.id, o.tracking_number, o.paystack_reference, o.sender_name, o.sender_phone, o.pickup_address,
+  o.receiver_name, o.receiver_phone, o.delivery_address, o.package_description,
+  o.item_value, o.quantity, o.is_fragile,
+  o.pickup_region_id, o.delivery_region_id, o.delivery_region_area_id,
+  o.eta_min_hours, o.eta_max_hours, o.eta_label,
+  o.price, o.status, o.created_at, o.updated_at,
+  pr.name AS pickup_region_name,
+  dr.name AS delivery_region_name,
+  dra.name AS delivery_region_area_name`;
+
+function mapOrderEvents(eventRows) {
+  return eventRows.map((r, i) => ({
+    id: i + 1,
+    status: r.status,
+    description: r.note || '',
+    created_at: r.created_at,
+  }));
+}
+
+async function fetchOrderEvents(orderId) {
+  const [eventRows] = await pool.execute(
+    'SELECT status, note, created_at FROM order_events WHERE order_id = ? ORDER BY created_at ASC',
+    [orderId]
+  );
+  return mapOrderEvents(eventRows);
+}
+
 async function getOrderByTracking(trackingNumber) {
   const [orders] = await pool.execute(
-    `SELECT tracking_number, sender_name, sender_phone, pickup_address, receiver_name, receiver_phone,
-            delivery_address, package_description, item_value, quantity, is_fragile,
-            pickup_region_id, delivery_region_id, delivery_region_area_id, eta_min_hours, eta_max_hours, eta_label,
-            price, status, created_at, updated_at
-     FROM orders WHERE tracking_number = ?`,
+    `SELECT o.tracking_number, o.sender_name, o.sender_phone, o.pickup_address, o.receiver_name, o.receiver_phone,
+            o.delivery_address, o.package_description, o.item_value, o.quantity, o.is_fragile,
+            o.pickup_region_id, o.delivery_region_id, o.delivery_region_area_id,
+            o.eta_min_hours, o.eta_max_hours, o.eta_label,
+            o.price, o.status, o.created_at, o.updated_at,
+            pr.name AS pickup_region_name,
+            dr.name AS delivery_region_name,
+            dra.name AS delivery_region_area_name
+     FROM orders o
+     ${ORDER_REGION_JOINS}
+     WHERE o.tracking_number = ?`,
     [trackingNumber]
   );
 
@@ -276,17 +315,25 @@ async function getOrderByTracking(trackingNumber) {
 
   const order = orders[0];
 
-  const [eventRows] = await pool.execute(
-    'SELECT status, note, created_at FROM order_events WHERE order_id = (SELECT id FROM orders WHERE tracking_number = ?) ORDER BY created_at ASC',
-    [trackingNumber]
+  const [idRows] = await pool.execute('SELECT id FROM orders WHERE tracking_number = ?', [trackingNumber]);
+  const events = await fetchOrderEvents(idRows[0].id);
+
+  return { ...order, events };
+}
+
+async function getOrderById(orderId) {
+  const [orders] = await pool.execute(
+    `SELECT ${ORDER_DETAIL_COLUMNS}
+     FROM orders o
+     ${ORDER_REGION_JOINS}
+     WHERE o.id = ?`,
+    [orderId]
   );
 
-  const events = eventRows.map((r, i) => ({
-    id: i + 1,
-    status: r.status,
-    description: r.note || '',
-    created_at: r.created_at,
-  }));
+  if (orders.length === 0) return null;
+
+  const order = orders[0];
+  const events = await fetchOrderEvents(order.id);
 
   return { ...order, events };
 }
@@ -346,6 +393,7 @@ module.exports = {
   ordersExistForReference,
   confirmOrdersForPayment,
   getOrderByTracking,
+  getOrderById,
   getAllOrders,
   updateOrderStatus,
   getOrdersByUserId,
