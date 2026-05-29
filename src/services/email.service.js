@@ -264,6 +264,80 @@ async function sendPasswordResetEmail({ to, name, code, userId }) {
   });
 }
 
+async function sendAdminNewOrderEmail({
+  to,
+  orderKind,
+  trackingNumber,
+  status,
+  price,
+  customerName,
+  customerEmail,
+  adminUrl,
+  orderId,
+  itemCount,
+}) {
+  const prettyStatus = formatStatus(status);
+  const safeTracking = escapeHtml(trackingNumber);
+  const safePrice = escapeHtml(price ?? '');
+  const safeCustomerName = escapeHtml(customerName || 'Customer');
+  const safeCustomerEmail = escapeHtml(customerEmail || '—');
+  const safeOrderKind = escapeHtml(orderKind === 'bulk' ? 'Bulk' : 'Single');
+  const badge = statusBadgeStyle(status);
+  const safeUrl = escapeHtml(adminUrl || '');
+
+  const statusValueHtml = `<span style="display:inline-block;padding:4px 10px;border-radius:9999px;background:${badge.bg};color:${badge.fg};font-family:${BRAND.fontStack};font-size:12px;font-weight:600;letter-spacing:0.02em;text-transform:uppercase;">${escapeHtml(prettyStatus)}</span>`;
+
+  const itemCountRow =
+    orderKind === 'bulk' && itemCount != null
+      ? detailRowHtml({ label: 'Items', value: escapeHtml(String(itemCount)) })
+      : '';
+
+  const ctaHtml = adminUrl
+    ? `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:20px 0 0;">
+      <tr>
+        <td style="border-radius:8px;background:${BRAND.primary};">
+          <a href="${safeUrl}" style="display:inline-block;padding:13px 22px;font-family:${BRAND.fontStack};font-size:15px;font-weight:600;color:${BRAND.primaryFg};text-decoration:none;border-radius:8px;">View in admin</a>
+        </td>
+      </tr>
+    </table>`
+    : '';
+
+  const contentHtml = `
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;margin:8px 0 0;">
+      ${detailRowHtml({ label: 'Order type', value: safeOrderKind, isFirst: true })}
+      ${detailRowHtml({ label: 'Tracking number', value: safeTracking })}
+      ${detailRowHtml({ label: 'Status', value: statusValueHtml })}
+      ${detailRowHtml({ label: 'Price', value: `&#8358;${safePrice}` })}
+      ${itemCountRow}
+      ${detailRowHtml({ label: 'Customer', value: `${safeCustomerName}<br/><span style="font-weight:400;color:${BRAND.muted};">${safeCustomerEmail}</span>` })}
+    </table>
+    ${ctaHtml}
+  `;
+
+  const textItemLine =
+    orderKind === 'bulk' && itemCount != null ? `\nItems: ${itemCount}` : '';
+
+  const html = wrapHtml({
+    preheader: `New ${orderKind === 'bulk' ? 'bulk ' : ''}order ${trackingNumber} · ${prettyStatus}`,
+    title: 'New order placed',
+    intro: 'A customer has placed a new order on Meenarh Logistics.',
+    contentHtml,
+    footerHtml: 'You are receiving this because you are an admin or staff user.',
+  });
+
+  const text = `New order placed on Meenarh Logistics.\nOrder type: ${orderKind === 'bulk' ? 'Bulk' : 'Single'}\nTracking number: ${trackingNumber}\nStatus: ${prettyStatus}\nPrice: NGN ${price ?? ''}${textItemLine}\nCustomer: ${customerName || 'Customer'} (${customerEmail || '—'})${adminUrl ? `\n\nView in admin: ${adminUrl}` : ''}`;
+
+  const idempotencyPrefix = orderKind === 'bulk' ? 'admin-new-order/bulk' : 'admin-new-order/single';
+
+  return sendEmail({
+    to,
+    subject: `New order — ${trackingNumber} (${prettyStatus})`,
+    html,
+    text,
+    idempotencyKey: orderId ? `${idempotencyPrefix}/${orderId}` : undefined,
+  });
+}
+
 async function sendEmailVerificationEmail({ to, name, verificationUrl, userId }) {
   const safeName = escapeHtml(name || 'there');
   const safeUrl = escapeHtml(verificationUrl);
@@ -304,6 +378,7 @@ module.exports = {
   sendEmail,
   sendOrderConfirmationEmail,
   sendOrderStatusUpdateEmail,
+  sendAdminNewOrderEmail,
   sendPasswordResetEmail,
   sendEmailVerificationEmail,
 };

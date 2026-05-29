@@ -5,6 +5,7 @@ const promoService = require('./promo.service');
 const paystack = require('./paystack.service');
 const bulkOrderService = require('./bulkOrder.service');
 const orderService = require('./order.service');
+const { notifyAdminsForPaystackReference } = require('./orderNotification.service');
 const { createBulkOrderSchema } = require('../validators/bulkOrder.validator');
 
 const MAX_PAID_WAIT_MS = 20000;
@@ -642,6 +643,12 @@ async function materializeOrdersForReference(reference, opts = {}) {
   if (await ordersAlreadyExist(reference)) {
     const checkoutPayload = await loadCheckoutPayloadFromReference(reference, intent);
     await markOrdersMaterialized(reference, checkoutPayload);
+    try {
+      notifyAdminsForPaystackReference(reference);
+    } catch (notifyErr) {
+      // eslint-disable-next-line no-console
+      console.error('[PaymentIntent] Failed to send admin new-order notifications', notifyErr);
+    }
     return checkoutPayload;
   }
 
@@ -744,6 +751,12 @@ async function materializeOrdersForReference(reference, opts = {}) {
   }
 
   await markOrdersMaterialized(reference, checkoutPayload);
+  try {
+    notifyAdminsForPaystackReference(reference);
+  } catch (notifyErr) {
+    // eslint-disable-next-line no-console
+    console.error('[PaymentIntent] Failed to send admin new-order notifications', notifyErr);
+  }
   return checkoutPayload;
 }
 
@@ -766,6 +779,7 @@ async function confirmPaymentForReference(reference, opts = {}) {
   if (intent.status === 'fulfilled') {
     return {
       payment_state: 'confirmed',
+      paystack_status: 'success',
       data: meta.checkoutResponse || (await loadCheckoutPayloadFromReference(reference, intent)),
     };
   }
@@ -792,6 +806,7 @@ async function confirmPaymentForReference(reference, opts = {}) {
   if (psStatus === 'pending') {
     return {
       payment_state: 'pending_payment',
+      paystack_status: psStatus,
       data: {
         reference,
         message: 'Payment is still being processed. Your order is reserved.',
@@ -819,12 +834,13 @@ async function confirmPaymentForReference(reference, opts = {}) {
       const latestMeta = parseMetadata(latest);
       return {
         payment_state: 'confirmed',
+        paystack_status: psStatus,
         data: latestMeta.checkoutResponse || checkoutPayload,
       };
     }
     if (latest.status === 'paid') {
       const fulfilled = await waitForFulfilledCheckout(reference);
-      return { payment_state: 'confirmed', data: fulfilled };
+      return { payment_state: 'confirmed', paystack_status: psStatus, data: fulfilled };
     }
     const err = new Error('Unable to process payment for this reference');
     err.statusCode = 409;
@@ -856,7 +872,7 @@ async function confirmPaymentForReference(reference, opts = {}) {
     console.error('Post-confirm side effects failed:', error);
   }
 
-  return { payment_state: 'confirmed', data: checkoutPayload };
+  return { payment_state: 'confirmed', paystack_status: psStatus, data: checkoutPayload };
 }
 
 /**

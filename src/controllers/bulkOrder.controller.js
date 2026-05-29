@@ -1,5 +1,6 @@
 const bulkOrderService = require('../services/bulkOrder.service');
 const { sendOrderStatusUpdateEmail } = require('../services/email.service');
+const { notifyAdminsNewBulkOrder } = require('../services/orderNotification.service');
 const pool = require('../config/db');
 
 // ─── Customer ────────────────────────────────────────────────────────────────
@@ -34,6 +35,15 @@ async function createBulkOrder(req, res, next) {
     bulkOrderService.notifyBulkOrderPlaced(userId, {
       trackingNumber: result.trackingNumber,
       totalPrice: result.totalPrice,
+    });
+
+    notifyAdminsNewBulkOrder({
+      bulkOrderId: result.bulkOrderId,
+      trackingNumber: result.trackingNumber,
+      status: bulkOrderService.ORDER_CREATED_STATUS,
+      price: result.totalPrice,
+      itemCount: result.itemCount,
+      customerUserId: userId,
     });
 
     res.status(201).json({

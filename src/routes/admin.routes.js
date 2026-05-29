@@ -26,6 +26,7 @@ router.post('/logout', adminController.logout);
 router.get('/orders', adminController.getOrders);
 router.get('/orders/:id', adminController.getOrderById);
 router.patch('/orders/:id/status', adminController.updateOrderStatus);
+router.post('/payments/reconcile', adminController.reconcilePayment);
 
 // Bulk order admin routes
 router.get('/bulk-orders', bulkOrderController.getAllBulkOrders);

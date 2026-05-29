@@ -3,6 +3,7 @@ const pool = require('../config/db');
 const { signToken, sessionCookieOptions } = require('../utils/jwt');
 const orderService = require('../services/order.service');
 const bulkOrderService = require('../services/bulkOrder.service');
+const paymentIntentService = require('../services/paymentIntent.service');
 const { sendOrderStatusUpdateEmail } = require('../services/email.service');
 
 const VALID_STATUSES = ['Order Created', 'Picked Up', 'In Transit', 'Out for Delivery', 'Delivered'];
@@ -316,7 +317,40 @@ async function getCustomerBulkOrders(req, res, next) {
   }
 }
 
+async function reconcilePayment(req, res, next) {
+  try {
+    const reference = req.body?.reference;
+    if (!reference || typeof reference !== 'string' || !reference.trim()) {
+      return res.status(400).json({ success: false, message: 'reference is required' });
+    }
+
+    const trimmed = reference.trim();
+    const result = await paymentIntentService.confirmPaymentForReference(trimmed);
+
+    if (result.payment_state === 'pending_payment') {
+      return res.json({
+        success: true,
+        payment_state: 'pending_payment',
+        paystack_status: result.paystack_status,
+        message: result.data?.message || 'Paystack still reports this payment as pending.',
+        data: result.data,
+      });
+    }
+
+    return res.json({
+      success: true,
+      payment_state: 'confirmed',
+      paystack_status: result.paystack_status,
+      message: 'Payment confirmed. Order status updated.',
+      data: result.data,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 module.exports = {
-  login, logout, me, getOrders, getOrderById, updateOrderStatus, listCustomers, createAdminUser,
+  login, logout, me, getOrders, getOrderById, updateOrderStatus, reconcilePayment,
+  listCustomers, createAdminUser,
   getCustomerById, getCustomerOrders, getCustomerBulkOrders, getCustomerCart,
 };

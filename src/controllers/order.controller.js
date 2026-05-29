@@ -1,6 +1,7 @@
 const orderService = require('../services/order.service');
 const bulkOrderService = require('../services/bulkOrder.service');
 const { sendOrderConfirmationEmail } = require('../services/email.service');
+const { notifyAdminsNewSingleOrder } = require('../services/orderNotification.service');
 const pool = require('../config/db');
 
 async function createOrder(req, res, next) {
@@ -29,6 +30,15 @@ async function createOrder(req, res, next) {
       // eslint-disable-next-line no-console
       console.error('[OrderController] Failed to send order confirmation email', notifyErr);
     }
+
+    notifyAdminsNewSingleOrder({
+      orderId: result.orderId,
+      trackingNumber: result.trackingNumber,
+      status: orderService.ORDER_CREATED_STATUS,
+      price: result.price,
+      customerUserId: userId,
+    });
+
     res.status(201).json({
       success: true,
       message: 'Order created successfully',

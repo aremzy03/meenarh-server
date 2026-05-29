@@ -9,6 +9,7 @@ Transactional notifications are delivered **only via email** (Resend). Phone OTP
 | Capability                | Resend (Email)                                |
 | ------------------------- | --------------------------------------------- |
 | Order confirmation        | ✅ `sendOrderConfirmationEmail`                |
+| Admin new-order alert     | ✅ `sendAdminNewOrderEmail`                    |
 | Order status updates      | ✅ `sendOrderStatusUpdateEmail`                |
 | Password reset code (OTP) | ✅ `sendPasswordResetEmail`                    |
 | Email verification (link) | ✅ `sendEmailVerificationEmail`                |
@@ -37,12 +38,13 @@ FRONTEND_BASE_URL=https://your-domain.com
 | `EMAIL_FROM`       | All emails            | Must use a domain **verified in Resend**. `onboarding@resend.dev` works in dev but only delivers to the Resend account owner.       |
 | `API_PUBLIC_URL`   | Email verification    | Used to build `${API_PUBLIC_URL}/api/user/verify-email?token=…`. If empty, signup still succeeds but no verification email is sent. |
 | `FRONTEND_BASE_URL`| Email verification    | The verify endpoint 302-redirects here with `?email_verified=success|expired|invalid|error`.                                       |
+| `ADMIN_BASE_URL`   | Admin new-order alert | Used to build “View in admin” links in admin notification emails.                                                                |
 
 ---
 
 ## 3. Template inventory
 
-All four templates live in one file: [`src/services/email.service.js`](./src/services/email.service.js).
+All five templates live in one file: [`src/services/email.service.js`](./src/services/email.service.js).
 Each function is the canonical "template name" — there are no external template assets to register in the Resend dashboard. HTML is composed in-process so the service ships as a single dependency-free module.
 
 | # | Function (template name)        | Subject                                                | Trigger location                            | Idempotency key                                       |
@@ -51,6 +53,7 @@ Each function is the canonical "template name" — there are no external templat
 | 2 | `sendOrderStatusUpdateEmail`    | `Order {Status} — {trackingNumber}`                    | `admin.controller.js → updateOrderStatus`   | `order-status/{orderId}/{updatedAtEpoch}`             |
 | 3 | `sendPasswordResetEmail`        | `Your Meenarh Logistics password reset code`           | `auth.routes.js → POST /forgot-password`    | `password-reset/{userId}/{code}`                      |
 | 4 | `sendEmailVerificationEmail`    | `Verify your Meenarh Logistics email`                  | `user.controller.js → signup` + `requestEmailVerification` | `email-verification/{userId}`                |
+| 5 | `sendAdminNewOrderEmail`        | `New order — {trackingNumber} ({status})`              | `orderNotification.service.js` (Paystack materialize + direct API creates) | `admin-new-order/single/{orderId}` or `admin-new-order/bulk/{bulkOrderId}` |
 
 **Idempotency model.** Resend deduplicates identical idempotency keys within a 24-hour window. The keys above are chosen so that:
 
@@ -255,6 +258,28 @@ sendEmailVerificationEmail({ to, name, verificationUrl, userId })
 
 The CTA link targets `GET /api/user/verify-email?token=…`, which `userController.verifyEmail` validates and then 302-redirects to `${FRONTEND_BASE_URL}/?email_verified=success` (or `=expired` / `=invalid` / `=error`). The frontend reads that query parameter to render its result UI — no new web page is required beyond reading the param.
 
+### 6.5 Admin new-order alert — `sendAdminNewOrderEmail`
+
+**Signature**
+
+```js
+sendAdminNewOrderEmail({ to, orderKind, trackingNumber, status, price, customerName, customerEmail, adminUrl, orderId, itemCount })
+```
+
+**Subject** `New order — {trackingNumber} ({status})`
+**Preheader** `New {single|bulk} order {trackingNumber} · {status}`
+**Recipients** Every row in the `users` table (admin and staff roles).
+**Fires from** [`src/services/orderNotification.service.js`](./src/services/orderNotification.service.js):
+
+- Paystack checkout: `paymentIntent.service.js → materializeOrdersForReference` (includes `"Pending Payment"` orders)
+- Direct API: `order.controller.js → createOrder`, `bulkOrder.controller.js → createBulkOrder`
+
+**Body anatomy**
+
+- Title: `New order placed`
+- Detail table: order type, tracking number, status pill, price, optional bulk item count, customer name + email
+- CTA: “View in admin” linking to `${ADMIN_BASE_URL}/admin/orders/{id}` or `/admin/bulk-orders?highlight={id}`
+
 ---
 
 ## 7. Anti-spam & deliverability practices baked in
@@ -297,10 +322,13 @@ The CTA link targets `GET /api/user/verify-email?token=…`, which `userControll
 
 | File                                                                | Purpose                                                        |
 | ------------------------------------------------------------------- | -------------------------------------------------------------- |
-| [`src/services/email.service.js`](./src/services/email.service.js)  | All four templates + shared shell, Resend client, send helper. |
+| [`src/services/email.service.js`](./src/services/email.service.js)  | All five templates + shared shell, Resend client, send helper. |
+| [`src/services/orderNotification.service.js`](./src/services/orderNotification.service.js) | Fans out admin new-order alerts to all `users` emails. |
 | [`src/services/user.service.js`](./src/services/user.service.js)    | `createEmailVerificationToken`, `verifyEmailToken` (hashed tokens, 24 h TTL, 60 s resend cooldown). |
 | [`src/controllers/user.controller.js`](./src/controllers/user.controller.js) | Fires verification email on signup; `verifyEmail` redirect handler; `requestEmailVerification` resend. |
-| [`src/controllers/order.controller.js`](./src/controllers/order.controller.js) | Fires order-confirmation email.                                |
+| [`src/controllers/order.controller.js`](./src/controllers/order.controller.js) | Fires order-confirmation + admin new-order emails.             |
+| [`src/services/paymentIntent.service.js`](./src/services/paymentIntent.service.js) | Fires admin new-order emails on Paystack materialize.          |
+| [`src/controllers/bulkOrder.controller.js`](./src/controllers/bulkOrder.controller.js) | Fires customer + admin new-order emails on direct bulk create. |
 | [`src/controllers/admin.controller.js`](./src/controllers/admin.controller.js) | Fires status-update email.                                     |
 | [`src/routes/auth.routes.js`](./src/routes/auth.routes.js)          | Fires password-reset email.                                    |
 | [`migrations/remove-phone-verification.sql`](./migrations/remove-phone-verification.sql) | Drops `phone_verifications` and `customers.is_phone_verified`. |
