@@ -67,6 +67,37 @@ function parseMetadata(row) {
   return row.metadata;
 }
 
+/**
+ * Paystack verify `amount` is the gross amount received. On bank_transfer, fees may be
+ * added on top of what we initialized (`requested_amount`). Match against the payable
+ * amount, not the gross total.
+ */
+function paystackPayableKoboFromVerifyData(data) {
+  if (data == null) return NaN;
+  if (data.requested_amount != null && data.requested_amount !== '') {
+    const requested = Number(data.requested_amount);
+    if (!Number.isNaN(requested)) return requested;
+  }
+  return Number(data.amount);
+}
+
+function paystackAmountMatchesIntent(data, intentAmountKobo) {
+  const expected = Number(intentAmountKobo);
+  if (Number.isNaN(expected)) return false;
+
+  const payable = paystackPayableKoboFromVerifyData(data);
+  if (payable === expected) return true;
+
+  const gross = Number(data.amount);
+  if (Number.isNaN(gross)) return false;
+  if (gross === expected) return true;
+
+  const fees = Number(data.fees || 0);
+  if (fees > 0 && gross === expected + fees) return true;
+
+  return false;
+}
+
 function formatCheckoutPayload(orders, extra = {}) {
   const list = Array.isArray(orders) ? orders : [orders];
   return {
@@ -821,7 +852,7 @@ async function confirmPaymentForReference(reference, opts = {}) {
     throw err;
   }
 
-  if (Number(data.amount) !== Number(intent.amount_kobo)) {
+  if (!paystackAmountMatchesIntent(data, intent.amount_kobo)) {
     const err = new Error('Payment amount does not match order total');
     err.statusCode = 400;
     throw err;
