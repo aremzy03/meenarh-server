@@ -143,15 +143,6 @@ async function login(req, res, next) {
       return res.status(401).json({ success: false, message: 'Invalid email or password' });
     }
 
-    if (!customer.is_email_verified && isEmailVerificationEnforced()) {
-      return res.status(403).json({
-        success: false,
-        message:
-          'Please verify your email before signing in. Check your inbox for the verification link.',
-        code: 'EMAIL_NOT_VERIFIED',
-      });
-    }
-
     // Generate JWT
     const token = signToken({ id: customer.id, email: customer.email, kind: 'customer' });
     res.cookie('meenarh_customer_token', token, sessionCookieOptions());

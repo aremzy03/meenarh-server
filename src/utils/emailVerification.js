@@ -6,7 +6,7 @@ function isEmailVerificationFullyConfigured() {
   return !!(apiBase && process.env.RESEND_API_KEY?.trim() && process.env.EMAIL_FROM?.trim());
 }
 
-/** When true, unverified customers cannot log in or use gated APIs (skipped in dev if email is not configured). */
+/** When true, unverified customers can log in but cannot use gated APIs (skipped in dev if email is not configured). */
 function isEmailVerificationEnforced() {
   const prod = process.env.NODE_ENV === 'production';
   const configured = isEmailVerificationFullyConfigured();
